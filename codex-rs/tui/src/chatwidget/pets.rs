@@ -171,6 +171,26 @@ impl ChatWidget {
         true
     }
 
+    pub(super) fn maybe_show_pet_companion_discoverability_hint(&mut self) {
+        if self.config.tui_pet.is_none()
+            || self
+                .config
+                .tui_pet
+                .as_deref()
+                .is_some_and(|pet| pet == crate::pets::DISABLED_PET_ID)
+        {
+            return;
+        }
+        if self.ambient_pet.is_some() {
+            return;
+        }
+        if self.pet_image_support().unsupported_message().is_none() {
+            return;
+        }
+        self.bottom_pane
+            .maybe_show_pet_companion_hint(/*show*/ true);
+    }
+
     fn pet_image_support(&self) -> crate::pets::PetImageSupport {
         #[cfg(test)]
         if let Some(support) = self.pet_image_support_override {

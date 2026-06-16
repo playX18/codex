@@ -259,26 +259,10 @@ impl AppServerSession {
     pub(crate) async fn bootstrap(&mut self, config: &Config) -> Result<AppServerBootstrap> {
         let started_at = Instant::now();
         let account = self.read_account().await?;
-        let model_request_id = self.next_request_id();
-        let models: ModelListResponse = self
-            .client
-            .request_typed(ClientRequest::ModelList {
-                request_id: model_request_id,
-                params: ModelListParams {
-                    cursor: None,
-                    limit: None,
-                    include_hidden: Some(true),
-                },
-            })
+        let available_models = self
+            .refresh_available_models()
             .await
-            .map_err(|err| {
-                bootstrap_request_error("model/list failed during TUI bootstrap", err)
-            })?;
-        let available_models = models
-            .data
-            .into_iter()
-            .map(model_preset_from_api_model)
-            .collect::<Vec<_>>();
+            .wrap_err("model/list failed during TUI bootstrap")?;
         let default_model = config
             .model
             .clone()
@@ -344,6 +328,28 @@ impl AppServerSession {
             has_chatgpt_account,
             available_models,
         })
+    }
+
+    pub(crate) async fn refresh_available_models(&mut self) -> Result<Vec<ModelPreset>> {
+        let model_request_id = self.next_request_id();
+        let models: ModelListResponse = self
+            .client
+            .request_typed(ClientRequest::ModelList {
+                request_id: model_request_id,
+                params: ModelListParams {
+                    cursor: None,
+                    limit: None,
+                    include_hidden: Some(true),
+                },
+            })
+            .await?;
+        let available_models = models
+            .data
+            .into_iter()
+            .map(model_preset_from_api_model)
+            .collect::<Vec<_>>();
+        self.available_models = available_models.clone();
+        Ok(available_models)
     }
 
     /// Fetches the current account info without refreshing the auth token.

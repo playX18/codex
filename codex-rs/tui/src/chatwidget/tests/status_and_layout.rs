@@ -3776,3 +3776,112 @@ async fn chatwidget_tall() {
         normalize_snapshot_paths(term.backend().vt100().screen().contents())
     );
 }
+
+fn write_models_dev_cache_for_tests(chat: &ChatWidget, model_id: &str) {
+    use codex_models_dev::ModelsDevModel;
+    use codex_models_dev::ModelsDevModelCost;
+    use codex_models_dev::ModelsDevModelLimit;
+    use codex_models_dev::ModelsDevProvider;
+    use std::collections::HashMap;
+    use std::fs;
+
+    let providers = HashMap::from([(
+        chat.config.model_provider_id.clone(),
+        ModelsDevProvider {
+            id: chat.config.model_provider_id.clone(),
+            name: chat.config.model_provider_id.clone(),
+            env: vec!["TEST_API_KEY".to_string()],
+            api: Some("https://example.test/v1".to_string()),
+            npm: None,
+            models: HashMap::from([(
+                model_id.to_string(),
+                ModelsDevModel {
+                    id: model_id.to_string(),
+                    name: model_id.to_string(),
+                    reasoning: false,
+                    tool_call: true,
+                    attachment: false,
+                    temperature: true,
+                    release_date: None,
+                    family: None,
+                    limit: ModelsDevModelLimit {
+                        context: 128_000,
+                        output: 16_000,
+                        input: None,
+                    },
+                    status: None,
+                    cost: Some(ModelsDevModelCost {
+                        input: 2.0,
+                        output: 8.0,
+                        cache_read: 0.5,
+                        cache_write: 0.0,
+                    }),
+                },
+            )]),
+        },
+    )]);
+    let cache_path = chat
+        .config
+        .codex_home
+        .join(codex_models_dev::MODELS_DEV_CACHE_FILE);
+    fs::write(cache_path, serde_json::to_string(&providers).expect("json"))
+        .expect("write models.dev cache");
+}
+
+#[tokio::test]
+async fn statusline_cost_estimates_render_from_models_dev_cache() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let model_id = chat.current_model().to_string();
+    write_models_dev_cache_for_tests(&chat, model_id.as_str());
+    chat.config.tui_status_line = Some(vec![
+        "session-cost-estimate".to_string(),
+        "turn-cost-estimate".to_string(),
+    ]);
+
+    let usage_at_start = TokenUsage {
+        input_tokens: 1_000_000,
+        output_tokens: 0,
+        ..TokenUsage::default()
+    };
+    chat.token_throughput.on_turn_started(Some(usage_at_start));
+    handle_token_count(
+        &mut chat,
+        Some(TokenUsageInfo {
+            total_token_usage: TokenUsage {
+                input_tokens: 1_500_000,
+                output_tokens: 500_000,
+                ..TokenUsage::default()
+            },
+            last_token_usage: TokenUsage {
+                output_tokens: 500_000,
+                ..TokenUsage::default()
+            },
+            model_context_window: Some(128_000),
+        }),
+    );
+    chat.finalize_turn_cost_estimate();
+    chat.refresh_status_line();
+
+    assert_eq!(
+        status_line_text(&chat),
+        Some("~$7.00 est. · ~$5.00 turn".to_string())
+    );
+}
+
+#[tokio::test]
+async fn statusline_token_throughput_shows_last_completed_turn() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_status_line = Some(vec!["token-throughput".to_string()]);
+    chat.token_throughput.on_turn_completed(
+        Instant::now() - Duration::from_secs(2),
+        Instant::now(),
+        &TokenUsage {
+            output_tokens: 100,
+            ..TokenUsage::default()
+        },
+        None,
+    );
+    chat.refresh_status_line();
+
+    assert_eq!(status_line_text(&chat), Some("50 t/s".to_string()));
+}

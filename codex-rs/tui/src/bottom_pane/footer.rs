@@ -89,6 +89,7 @@ pub(crate) struct FooterProps {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CollaborationModeIndicator {
     Plan,
+    Compose,
     #[allow(dead_code)] // Hidden by current mode filtering; kept for future UI re-enablement.
     PairProgramming,
     #[allow(dead_code)] // Hidden by current mode filtering; kept for future UI re-enablement.
@@ -147,6 +148,7 @@ impl CollaborationModeIndicator {
         };
         match self {
             CollaborationModeIndicator::Plan => format!("Plan mode{suffix}"),
+            CollaborationModeIndicator::Compose => format!("Compose mode{suffix}"),
             CollaborationModeIndicator::PairProgramming => {
                 format!("Pair Programming mode{suffix}")
             }
@@ -158,6 +160,7 @@ impl CollaborationModeIndicator {
         let label = self.label(show_cycle_hint);
         match self {
             CollaborationModeIndicator::Plan => Span::from(label).magenta(),
+            CollaborationModeIndicator::Compose => Span::from(label).magenta(),
             CollaborationModeIndicator::PairProgramming => Span::from(label).cyan(),
             CollaborationModeIndicator::Execute => Span::from(label).dim(),
         }
@@ -575,14 +578,17 @@ pub(crate) fn status_line_right_indicator_line(
     collaboration_mode_indicator: Option<CollaborationModeIndicator>,
     goal_status_indicator: Option<&GoalStatusIndicator>,
     ide_context_active: bool,
+    third_party_provider_label: Option<&str>,
     show_cycle_hint: bool,
 ) -> Option<Line<'static>> {
     let primary_indicator = mode_indicator_line(collaboration_mode_indicator, show_cycle_hint)
         .or_else(|| goal_status_indicator_line(goal_status_indicator));
+    let provider_indicator = third_party_provider_label
+        .map(|label| Line::from(vec!["Provider: ".dim(), label.to_string().cyan()]));
     let ide_context_indicator = ide_context_active.then(|| Line::from(vec!["IDE context".cyan()]));
     let mut line: Option<Line<'static>> = None;
 
-    for indicator in [primary_indicator, ide_context_indicator]
+    for indicator in [primary_indicator, provider_indicator, ide_context_indicator]
         .into_iter()
         .flatten()
     {
@@ -1377,12 +1383,14 @@ mod tests {
                         collaboration_mode_indicator,
                         /*goal_status_indicator*/ None,
                         ide_context_active,
+                        /*third_party_provider_label*/ None,
                         show_cycle_hint,
                     );
                     let compact = status_line_right_indicator_line(
                         collaboration_mode_indicator,
                         /*goal_status_indicator*/ None,
                         ide_context_active,
+                        /*third_party_provider_label*/ None,
                         /*show_cycle_hint*/ false,
                     );
                     let full_width = full.as_ref().map(|line| line.width() as u16).unwrap_or(0);

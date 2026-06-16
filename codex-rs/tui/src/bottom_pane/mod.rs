@@ -46,6 +46,7 @@ use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Stylize;
 use ratatui::text::Line;
 use std::time::Duration;
 use std::time::Instant;
@@ -60,6 +61,7 @@ mod status_line_setup;
 mod status_line_style;
 mod status_surface_preview;
 mod title_setup;
+mod toast;
 pub(crate) use action_required_title::ACTION_REQUIRED_PREVIEW_PREFIX;
 pub(crate) use action_required_title::build_action_required_title_text;
 pub(crate) use app_link_view::AppLinkElicitationTarget;
@@ -73,6 +75,10 @@ pub(crate) use mcp_server_elicitation::McpServerElicitationFormRequest;
 pub(crate) use mcp_server_elicitation::McpServerElicitationOverlay;
 pub(crate) use request_user_input::RequestUserInputOverlay;
 pub(crate) use status_line_style::status_line_from_segments;
+pub(crate) use toast::Toast;
+pub(crate) use toast::ToastVariant;
+pub(crate) use toast::render_toast;
+pub(crate) use toast::show_toast;
 mod bottom_pane_view;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -144,6 +150,7 @@ pub(crate) mod popup_consts;
 mod scroll_state;
 mod selection_popup_common;
 mod selection_tabs;
+mod shutdown_feedback;
 mod textarea;
 mod unified_exec_footer;
 pub(crate) use feedback_view::FeedbackNoteView;
@@ -238,6 +245,7 @@ pub(crate) struct BottomPane {
     context_window_percent: Option<i64>,
     context_window_used_tokens: Option<i64>,
     keymap: RuntimeKeymap,
+    toast: Option<Toast>,
 }
 
 pub(crate) struct BottomPaneParams {
@@ -271,6 +279,7 @@ impl BottomPane {
             disable_paste_burst,
         );
         composer.set_frame_requester(frame_requester.clone());
+        composer.set_animations_enabled(animations_enabled);
         let keymap = RuntimeKeymap::defaults();
         composer.set_keymap_bindings(&keymap);
         composer.set_skill_mentions(skills);
@@ -295,6 +304,7 @@ impl BottomPane {
             context_window_percent: None,
             context_window_used_tokens: None,
             keymap,
+            toast: None,
         }
     }
 
@@ -409,6 +419,11 @@ impl BottomPane {
 
     pub fn set_ide_context_active(&mut self, active: bool) {
         self.composer.set_ide_context_active(active);
+        self.request_redraw();
+    }
+
+    pub fn set_third_party_provider_label(&mut self, label: Option<String>) {
+        self.composer.set_third_party_provider_label(label);
         self.request_redraw();
     }
 
@@ -815,6 +830,28 @@ impl BottomPane {
         self.view_stack.clear();
         self.composer.show_shutdown_in_progress();
         self.request_redraw();
+    }
+
+    pub(crate) fn maybe_show_pet_companion_hint(&mut self, show: bool) {
+        if !show {
+            return;
+        }
+        show_toast(
+            &mut self.toast,
+            Some("Companion".to_string()),
+            Line::from("Enable terminal images for companion mode.".dim()),
+            ToastVariant::Info,
+            Some(Duration::from_secs(8)),
+        );
+        self.request_redraw();
+    }
+
+    pub(crate) fn render_toast_overlay(&self, area: Rect, buf: &mut Buffer) {
+        if let Some(toast) = self.toast.as_ref()
+            && toast.visible()
+        {
+            render_toast(area, buf, toast);
+        }
     }
 
     pub(crate) fn clear_composer_for_ctrl_c(&mut self) {
@@ -2309,7 +2346,7 @@ mod tests {
         pane.render(area, &mut buf);
 
         let bufs = snapshot_buffer(&buf);
-        assert!(bufs.contains("• Working"), "expected Working header");
+        assert!(bufs.contains("Working"), "expected Working header");
     }
 
     #[test]

@@ -75,6 +75,7 @@ use crate::terminal_title::SetTerminalTitleResult;
 use crate::terminal_title::clear_terminal_title;
 use crate::terminal_title::set_terminal_title;
 use crate::text_formatting::proper_join;
+use crate::token_throughput::TokenThroughputState;
 use crate::token_usage::TokenUsage;
 use crate::token_usage::TokenUsageInfo;
 use crate::version::CODEX_CLI_VERSION;
@@ -259,6 +260,7 @@ fn normalize_thread_name(name: &str) -> Option<String> {
 use crate::app_event::AppEvent;
 use crate::app_event::ExitMode;
 use crate::app_event::PermissionProfileSelection;
+use crate::app_event::ProviderModelPickerItem;
 use crate::app_event::RateLimitRefreshOrigin;
 #[cfg(target_os = "windows")]
 use crate::app_event::WindowsSandboxEnableMode;
@@ -378,6 +380,7 @@ mod permission_popups;
 mod permissions_menu;
 mod protocol;
 mod protocol_requests;
+mod provider_popups;
 mod rate_limits;
 use self::rate_limits::RateLimitErrorKind;
 use self::rate_limits::RateLimitSwitchPromptState;
@@ -405,6 +408,7 @@ use self::status_state::StatusState;
 use self::status_state::TerminalTitleStatusKind;
 mod status_controls;
 mod status_surfaces;
+mod statusline_metrics;
 mod streaming;
 use self::status_surfaces::CachedProjectRootName;
 mod tokens;
@@ -535,6 +539,8 @@ pub(crate) struct ChatWidget {
     current_collaboration_mode: CollaborationMode,
     /// The currently active collaboration mask, if any.
     active_collaboration_mask: Option<CollaborationModeMask>,
+    /// Optional user override for subagent model defaults in Compose mode.
+    compose_subagent_model_prefs: Option<collaboration_modes::ComposeSubagentModelPrefs>,
     has_chatgpt_account: bool,
     has_codex_backend_auth: bool,
     model_catalog: Arc<ModelCatalog>,
@@ -724,6 +730,8 @@ pub(crate) struct ChatWidget {
     external_editor_state: ExternalEditorState,
     last_rendered_user_message_display: Option<UserMessageDisplay>,
     last_non_retry_error: Option<(String, String)>,
+    token_throughput: TokenThroughputState,
+    status_line_throughput_refresh_at: Option<Instant>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1164,6 +1172,7 @@ impl ChatWidget {
         }
         self.refresh_plan_mode_nudge();
         self.refresh_goal_status_indicator_for_time_tick();
+        self.maybe_refresh_status_line_throughput(Instant::now());
         if self.terminal_title_shows_action_required() != self.last_terminal_title_requires_action {
             self.refresh_terminal_title();
         }

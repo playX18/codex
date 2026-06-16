@@ -4,6 +4,13 @@
 //! into another, especially while Plan mode is active.
 
 use super::*;
+use codex_model_provider_info::OPENAI_PROVIDER_ID;
+use codex_models_manager::provider_catalog_manager::provider_scoped_cache_path;
+use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelsResponse;
+use codex_provider_catalog::ProviderAuthStore;
+use codex_provider_catalog::ProviderCatalogStore;
+use std::fs;
 
 impl ChatWidget {
     /// Open a popup to choose a quick auto model. Selecting "All models"
@@ -14,6 +21,12 @@ impl ChatWidget {
                 "Model selection is disabled until startup completes.".to_string(),
                 /*hint*/ None,
             );
+            return;
+        }
+
+        let provider_models = self.connected_provider_model_items();
+        if !provider_models.is_empty() {
+            self.open_provider_models_popup(provider_models, /*provider_filter*/ None);
             return;
         }
 
@@ -28,6 +41,175 @@ impl ChatWidget {
             }
         };
         self.open_model_popup_with_presets(presets);
+    }
+
+    fn connected_provider_model_items(&self) -> Vec<ProviderModelPickerItem> {
+        let mut items = Vec::new();
+        let models = self
+            .model_catalog
+            .try_list_models()
+            .expect("model catalog listing is infallible");
+        let provider_id = self.config.model_provider_id.clone();
+        let provider_name = if provider_id == OPENAI_PROVIDER_ID {
+            "ChatGPT (OpenAI)".to_string()
+        } else {
+            let provider_name = self.config.model_provider.name.trim();
+            if provider_name.is_empty() {
+                provider_id.clone()
+            } else {
+                provider_name.to_string()
+            }
+        };
+        items.extend(models.into_iter().map(|model| ProviderModelPickerItem {
+            provider_id: provider_id.clone(),
+            provider_name: provider_name.clone(),
+            model,
+        }));
+        if provider_id != OPENAI_PROVIDER_ID {
+            items.extend(openai_model_items_if_authenticated(
+                self.config.codex_home.as_path(),
+            ));
+        }
+
+        let Ok(auth) = ProviderAuthStore::load_from(self.config.codex_home.as_path()) else {
+            return items;
+        };
+        let store = ProviderCatalogStore::new(self.config.codex_home.to_path_buf());
+        let active_provider_id = self.config.model_provider_id.as_str();
+        let mut provider_ids = auth.entries.keys().cloned().collect::<Vec<_>>();
+        provider_ids.sort();
+        for provider_id in provider_ids {
+            if provider_id == active_provider_id {
+                continue;
+            }
+            let Ok(Some(catalog)) = store.load(&provider_id) else {
+                continue;
+            };
+            let provider_name = provider_id.clone();
+            items.extend(catalog.models.into_iter().map(|model| {
+                let model = ModelPreset::from(model);
+                ProviderModelPickerItem {
+                    provider_id: provider_id.clone(),
+                    provider_name: provider_name.clone(),
+                    model,
+                }
+            }));
+        }
+
+        items
+    }
+
+    pub(crate) fn open_provider_models_popup(
+        &mut self,
+        models: Vec<ProviderModelPickerItem>,
+        provider_filter: Option<String>,
+    ) {
+        let visible_models = models
+            .iter()
+            .filter(|item| item.model.show_in_picker)
+            .filter(|item| {
+                provider_filter
+                    .as_ref()
+                    .is_none_or(|filter| item.provider_id == *filter)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if visible_models.is_empty() {
+            self.add_info_message(
+                "No models are available for this provider filter.".to_string(),
+                /*hint*/ None,
+            );
+            return;
+        }
+
+        let mut provider_filters = models
+            .iter()
+            .map(|item| (item.provider_id.clone(), item.provider_name.clone()))
+            .collect::<Vec<_>>();
+        provider_filters.sort();
+        provider_filters.dedup();
+
+        let mut items = Vec::new();
+        if provider_filters.len() > 1 {
+            let all_models = models.clone();
+            items.push(SelectionItem {
+                name: "All connected providers".to_string(),
+                description: Some("Show models from every connected provider".to_string()),
+                is_current: provider_filter.is_none(),
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::OpenProviderModelsPopup {
+                        models: all_models.clone(),
+                        provider_filter: None,
+                    });
+                })],
+                dismiss_on_select: true,
+                search_value: Some("all connected providers".to_string()),
+                ..Default::default()
+            });
+            for (provider_id, provider_name) in provider_filters {
+                let all_models = models.clone();
+                let provider_id_for_action = provider_id.clone();
+                items.push(SelectionItem {
+                    name: format!("Provider: {provider_name}"),
+                    description: Some(provider_id.clone()),
+                    is_current: provider_filter.as_deref() == Some(provider_id.as_str()),
+                    actions: vec![Box::new(move |tx| {
+                        tx.send(AppEvent::OpenProviderModelsPopup {
+                            models: all_models.clone(),
+                            provider_filter: Some(provider_id_for_action.clone()),
+                        });
+                    })],
+                    dismiss_on_select: true,
+                    search_value: Some(format!("{provider_name} {provider_id}")),
+                    ..Default::default()
+                });
+            }
+        }
+
+        let current_provider = self.config.model_provider_id.as_str();
+        let current_model = self.current_model();
+        for item in visible_models {
+            let provider_id = item.provider_id.clone();
+            let model = item.model.model.clone();
+            let effort = Some(item.model.default_reasoning_effort.clone());
+            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                tx.send(AppEvent::PersistProviderModelSelection {
+                    provider_id: provider_id.clone(),
+                    model: model.clone(),
+                    effort: effort.clone(),
+                });
+            })];
+            items.push(SelectionItem {
+                name: item.model.model.clone(),
+                description: Some(format!(
+                    "{} · {}",
+                    item.provider_name, item.model.description
+                )),
+                is_current: item.provider_id == current_provider
+                    && item.model.model == current_model,
+                is_default: item.model.is_default,
+                actions,
+                dismiss_on_select: true,
+                search_value: Some(format!(
+                    "{} {} {} {}",
+                    item.model.model, item.model.description, item.provider_name, item.provider_id
+                )),
+                ..Default::default()
+            });
+        }
+
+        let header = self.model_menu_header(
+            "Select Model",
+            "Choose a model from any connected provider.",
+        );
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            footer_hint: Some(self.bottom_pane.standard_popup_hint_line()),
+            items,
+            header,
+            is_searchable: true,
+            search_placeholder: Some("Type to search models or providers".to_string()),
+            ..Default::default()
+        });
     }
 
     fn model_menu_header(&self, title: &str, subtitle: &str) -> Box<dyn Renderable> {
@@ -114,6 +296,7 @@ impl ChatWidget {
                     is_default: preset.is_default,
                     actions,
                     dismiss_on_select: true,
+                    search_value: Some(format!("{} {}", model, preset.description)),
                     ..Default::default()
                 }
             })
@@ -138,6 +321,7 @@ impl ChatWidget {
                 is_current,
                 actions,
                 dismiss_on_select: true,
+                search_value: Some(format!("all models {current_label}")),
                 ..Default::default()
             });
         }
@@ -150,6 +334,8 @@ impl ChatWidget {
             footer_hint: Some(standard_popup_hint_line()),
             items,
             header,
+            is_searchable: true,
+            search_placeholder: Some("Type to search models".to_string()),
             ..Default::default()
         });
     }
@@ -197,18 +383,21 @@ impl ChatWidget {
                 actions,
                 dismiss_on_select: single_supported_effort,
                 dismiss_parent_on_child_accept: !single_supported_effort,
+                search_value: Some(format!("{} {}", preset.model, preset.description)),
                 ..Default::default()
             });
         }
 
         let header = self.model_menu_header(
             "Select Model and Effort",
-            "Access legacy models by running codex -m <model_name> or in your config.toml",
+            "Access legacy models by running codexium -m <model_name> or in your config.toml",
         );
         self.bottom_pane.show_selection_view(SelectionViewParams {
             footer_hint: Some(self.bottom_pane.standard_popup_hint_line()),
             items,
             header,
+            is_searchable: true,
+            search_placeholder: Some("Type to search models".to_string()),
             ..Default::default()
         });
     }
@@ -530,5 +719,177 @@ impl ChatWidget {
         self.apply_model_and_effort_without_persist(model.clone(), effort.clone());
         self.app_event_tx
             .send(AppEvent::PersistModelSelection { model, effort });
+    }
+
+    /// Optional picker for Compose subagent model defaults (`/compose-models`).
+    pub(crate) fn open_compose_subagent_model_picker(&mut self) {
+        if self.active_mode_kind() != ModeKind::Compose {
+            self.add_info_message(
+                "/compose-models is available in Compose mode.".to_string(),
+                Some("Use /compose or Shift+Tab to enter Compose mode.".to_string()),
+            );
+            return;
+        }
+        if !self.is_session_configured() {
+            self.add_info_message(
+                "Model selection is disabled until startup completes.".to_string(),
+                /*hint*/ None,
+            );
+            return;
+        }
+
+        let presets: Vec<ModelPreset> = match self.model_catalog.try_list_models() {
+            Ok(models) => models,
+            Err(_) => {
+                self.add_info_message(
+                    "Models are being updated; try /compose-models again in a moment.".to_string(),
+                    /*hint*/ None,
+                );
+                return;
+            }
+        };
+
+        let allowlist: HashSet<&str> = collaboration_modes::COMPOSE_MODEL_ALLOWLIST
+            .iter()
+            .copied()
+            .collect();
+        let filtered: Vec<ModelPreset> = presets
+            .into_iter()
+            .filter(|preset| preset.show_in_picker && allowlist.contains(preset.model.as_str()))
+            .collect();
+
+        let mut items: Vec<SelectionItem> = Vec::new();
+        items.push(SelectionItem {
+            name: "Automated (default)".to_string(),
+            description: Some(
+                "Orchestrator picks subagent models from task role and complexity.".to_string(),
+            ),
+            is_current: self.compose_subagent_model_prefs.is_none(),
+            actions: vec![Box::new(|tx| {
+                tx.send(AppEvent::ClearComposeSubagentModelPrefs);
+            })],
+            dismiss_on_select: true,
+            ..Default::default()
+        });
+
+        if filtered.is_empty() {
+            self.add_info_message(
+                "No Compose subagent models are available right now.".to_string(),
+                /*hint*/ None,
+            );
+            return;
+        }
+
+        for preset in filtered {
+            let description =
+                (!preset.description.is_empty()).then_some(preset.description.to_string());
+            let is_current = self
+                .compose_subagent_model_prefs
+                .as_ref()
+                .is_some_and(|prefs| prefs.model == preset.model);
+            let effort = preset.default_reasoning_effort.clone();
+            let model = preset.model.clone();
+            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                tx.send(AppEvent::SetComposeSubagentModelPrefs {
+                    model: model.clone(),
+                    reasoning: Some(effort.clone()),
+                });
+            })];
+            items.push(SelectionItem {
+                name: preset.model.clone(),
+                description,
+                is_current,
+                actions,
+                dismiss_on_select: true,
+                search_value: Some(format!("{} {}", preset.model, preset.description)),
+                ..Default::default()
+            });
+        }
+
+        let header = self.model_menu_header(
+            "Subagent models",
+            "Optional default for spawn_agent. Automated upgrades still apply for reviewers and complex roles.",
+        );
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            header,
+            is_searchable: true,
+            search_placeholder: Some("Type to search subagent models".to_string()),
+            ..Default::default()
+        });
+    }
+}
+
+fn openai_model_items_if_authenticated(
+    codex_home: &std::path::Path,
+) -> Vec<ProviderModelPickerItem> {
+    if !codex_home.join("auth.json").exists() {
+        return Vec::new();
+    }
+
+    let models = load_openai_models(codex_home).unwrap_or_default();
+    models
+        .into_iter()
+        .map(|model| ProviderModelPickerItem {
+            provider_id: OPENAI_PROVIDER_ID.to_string(),
+            provider_name: "ChatGPT (OpenAI)".to_string(),
+            model: ModelPreset::from(model),
+        })
+        .collect()
+}
+
+fn load_openai_models(codex_home: &std::path::Path) -> Option<Vec<ModelInfo>> {
+    let cache_path = provider_scoped_cache_path(&codex_home.to_path_buf(), OPENAI_PROVIDER_ID);
+    if let Ok(contents) = fs::read_to_string(cache_path)
+        && let Ok(catalog) = serde_json::from_str::<ModelsResponse>(&contents)
+    {
+        return Some(catalog.models);
+    }
+
+    codex_models_manager::bundled_models_response()
+        .ok()
+        .map(|catalog| catalog.models)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use tempfile::TempDir;
+
+    #[test]
+    fn openai_model_items_require_auth_json() {
+        let codex_home = TempDir::new().expect("tempdir");
+
+        assert!(openai_model_items_if_authenticated(codex_home.path()).is_empty());
+    }
+
+    #[test]
+    fn openai_model_items_read_provider_scoped_cache() {
+        let codex_home = TempDir::new().expect("tempdir");
+        fs::write(
+            codex_home.path().join("auth.json"),
+            r#"{"OPENAI_API_KEY":null,"tokens":{"access_token":"token"}}"#,
+        )
+        .expect("write auth");
+        let cache_path =
+            provider_scoped_cache_path(&codex_home.path().to_path_buf(), OPENAI_PROVIDER_ID);
+        fs::write(
+            cache_path,
+            serde_json::to_string(&ModelsResponse {
+                models: vec![codex_models_manager::model_info::model_info_from_slug(
+                    "gpt-test",
+                )],
+            })
+            .expect("serialize catalog"),
+        )
+        .expect("write cache");
+
+        let items = openai_model_items_if_authenticated(codex_home.path());
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].provider_id, OPENAI_PROVIDER_ID);
+        assert_eq!(items[0].model.model, "gpt-test");
     }
 }

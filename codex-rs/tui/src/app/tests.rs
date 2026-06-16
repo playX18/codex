@@ -4881,7 +4881,7 @@ fn session_start_error_surfaces_archived_guidance_without_rollout_path() {
         thread_id,
     };
     let expected = format!(
-        "session {thread_id} is archived. Run `codex unarchive {thread_id}` to unarchive it first."
+        "session {thread_id} is archived. Run `codexium unarchive {thread_id}` to unarchive it first."
     );
 
     for action in ["resume", "fork"] {
@@ -5944,6 +5944,52 @@ async fn thread_setting_update_params_sync_model_and_default_reasoning() {
     assert_eq!(
         collaboration_mode.settings.reasoning_effort,
         Some(ReasoningEffortConfig::High)
+    );
+}
+
+#[tokio::test]
+async fn thread_setting_update_params_sync_provider_and_model_together() {
+    let mut app = make_test_app().await;
+    let thread_id = ThreadId::new();
+    app.active_thread_id = Some(thread_id);
+
+    app.chat_widget.set_model("mimo-v2.5");
+    let provider_info = codex_model_provider_info::ModelProviderInfo {
+        name: "Xiaomi Token Plan".to_string(),
+        base_url: Some("https://example.invalid/v1".to_string()),
+        env_key: Some("XIAOMI_API_KEY".to_string()),
+        ..Default::default()
+    };
+    let params = app
+        .active_thread_provider_model_setting_update_params(
+            "xiaomi-token-plan-sgp".to_string(),
+            provider_info,
+            "mimo-v2.5".to_string(),
+        )
+        .expect("active thread should produce update params");
+
+    assert_eq!(params.thread_id, thread_id.to_string());
+    assert_eq!(
+        params.model_provider,
+        Some("xiaomi-token-plan-sgp".to_string())
+    );
+    assert_eq!(
+        params
+            .model_provider_info
+            .as_ref()
+            .and_then(|info| info.get("base_url"))
+            .and_then(serde_json::Value::as_str),
+        Some("https://example.invalid/v1")
+    );
+    assert_eq!(params.model, Some("mimo-v2.5".to_string()));
+    assert_eq!(
+        params
+            .collaboration_mode
+            .as_ref()
+            .expect("collaboration mode should sync with model")
+            .settings
+            .model,
+        "mimo-v2.5"
     );
 }
 

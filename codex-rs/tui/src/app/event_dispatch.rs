@@ -5,6 +5,7 @@
 
 use super::resize_reflow::trailing_run_start;
 use super::*;
+use crate::collaboration_modes;
 use crate::config_update::format_config_error;
 use crate::external_agent_config_migration_flow::ExternalAgentConfigMigrationFlowOutcome;
 #[cfg(target_os = "windows")]
@@ -800,7 +801,7 @@ impl App {
                     .await;
             }
             AppEvent::UpdateModel(model) => {
-                self.chat_widget.set_model(&model);
+                self.on_update_model(&model);
                 self.sync_active_thread_model_setting(app_server, model)
                     .await;
                 self.sync_active_thread_service_tier_to_cached_session()
@@ -820,6 +821,25 @@ impl App {
             }
             AppEvent::OpenAllModelsPopup { models } => {
                 self.chat_widget.open_all_models_popup(models);
+            }
+            AppEvent::OpenProviderModelsPopup {
+                models,
+                provider_filter,
+            } => {
+                self.chat_widget
+                    .open_provider_models_popup(models, provider_filter);
+            }
+            AppEvent::SetComposeSubagentModelPrefs { model, reasoning } => {
+                self.chat_widget.set_compose_subagent_model_prefs(Some(
+                    collaboration_modes::ComposeSubagentModelPrefs {
+                        model,
+                        reasoning_effort: reasoning,
+                    },
+                ));
+            }
+            AppEvent::ClearComposeSubagentModelPrefs => {
+                self.chat_widget
+                    .set_compose_subagent_model_prefs(/*prefs*/ None);
             }
             AppEvent::OpenFullAccessConfirmation {
                 preset,
@@ -1412,6 +1432,193 @@ impl App {
                         );
                         self.chat_widget.add_error_message(format!(
                             "Failed to save default personality: {err}"
+                        ));
+                    }
+                }
+            }
+            AppEvent::OpenProviderApiKeyPrompt {
+                provider_id,
+                provider_name,
+            } => {
+                self.chat_widget
+                    .open_provider_api_key_prompt(provider_id, provider_name);
+            }
+            AppEvent::ProviderApiKeySubmitted {
+                provider_id,
+                api_key,
+            } => {
+                let cache =
+                    codex_models_dev::ModelsDevCache::new(self.config.codex_home.to_path_buf());
+                match cache.get(/*force_refresh*/ false).await {
+                    Ok(providers) => {
+                        let Some(provider) = providers.get(&provider_id) else {
+                            self.chat_widget.add_error_message(format!(
+                                "Unknown provider `{provider_id}` from models.dev"
+                            ));
+                            return Ok(AppRunControl::Continue);
+                        };
+                        let mut auth = codex_provider_catalog::ProviderAuthStore::load_from(
+                            self.config.codex_home.as_path(),
+                        )
+                        .unwrap_or_default();
+                        auth.set_api_key(&provider_id, api_key);
+                        if let Err(err) = auth.save_to(self.config.codex_home.as_path()) {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to save provider credentials: {err}"
+                            ));
+                            return Ok(AppRunControl::Continue);
+                        }
+                        if let Err(err) = codex_provider_catalog::write_provider_catalog(
+                            self.config.codex_home.as_path(),
+                            &provider_id,
+                            provider,
+                        ) {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to save provider model catalog: {err}"
+                            ));
+                            return Ok(AppRunControl::Continue);
+                        }
+                        let provider_info =
+                            codex_provider_catalog::map_provider_to_model_provider_info(provider);
+                        if let Some(env_key) = provider_info.env_key.as_deref()
+                            && let Err(err) = auth.apply_env_for_provider(&provider_id, env_key)
+                        {
+                            self.chat_widget.add_error_message(format!(
+                                "Failed to activate provider credentials: {err}"
+                            ));
+                            return Ok(AppRunControl::Continue);
+                        }
+                        let provider_info_json = match serde_json::to_value(&provider_info) {
+                            Ok(value) => value,
+                            Err(err) => {
+                                self.chat_widget.add_error_message(format!(
+                                    "Failed to encode provider config: {err}"
+                                ));
+                                return Ok(AppRunControl::Continue);
+                            }
+                        };
+                        let edits = vec![crate::config_update::build_model_provider_config_edit(
+                            &provider_id,
+                            provider_info_json,
+                        )];
+                        match crate::config_update::write_config_batch(
+                            app_server.request_handle(),
+                            edits,
+                        )
+                        .await
+                        {
+                            Ok(_) => {
+                                self.refresh_in_memory_config_from_disk_best_effort(
+                                    "logging in to provider",
+                                )
+                                .await;
+                                self.chat_widget.add_info_message(
+                                    format!("Logged in to provider {provider_id}"),
+                                    /*hint*/ None,
+                                );
+                                self.chat_widget.open_model_popup();
+                            }
+                            Err(err) => {
+                                let err = crate::config_update::format_config_error(&err);
+                                self.chat_widget.add_error_message(format!(
+                                    "Failed to save provider config: {err}"
+                                ));
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        self.chat_widget.add_error_message(format!(
+                            "Failed to load provider list from models.dev: {err}"
+                        ));
+                    }
+                }
+            }
+            AppEvent::PersistProviderModelSelection {
+                provider_id,
+                model,
+                effort,
+            } => {
+                let mut selected_provider_info = None;
+                let mut edits = crate::config_update::build_model_provider_switch_edits(
+                    self.config.codex_home.as_path(),
+                    &provider_id,
+                );
+                if provider_id != codex_model_provider_info::OPENAI_PROVIDER_ID {
+                    let cache =
+                        codex_models_dev::ModelsDevCache::new(self.config.codex_home.to_path_buf());
+                    if let Ok(providers) = cache.get(/*force_refresh*/ false).await
+                        && let Some(provider) = providers.get(&provider_id)
+                    {
+                        let provider_info =
+                            codex_provider_catalog::map_provider_to_model_provider_info(provider);
+                        selected_provider_info = Some(provider_info.clone());
+                        match serde_json::to_value(provider_info) {
+                            Ok(provider_info_json) => {
+                                edits.push(crate::config_update::build_model_provider_config_edit(
+                                    &provider_id,
+                                    provider_info_json,
+                                ));
+                            }
+                            Err(err) => {
+                                self.chat_widget.add_error_message(format!(
+                                    "Failed to encode provider config: {err}"
+                                ));
+                                return Ok(AppRunControl::Continue);
+                            }
+                        }
+                    }
+                }
+                edits.extend(crate::config_update::build_model_selection_edits(
+                    model.as_str(),
+                    effort.as_ref(),
+                ));
+                match crate::config_update::write_config_batch(app_server.request_handle(), edits)
+                    .await
+                {
+                    Ok(_) => {
+                        self.refresh_in_memory_config_from_disk_best_effort(
+                            "selecting provider model",
+                        )
+                        .await;
+                        let provider_info = selected_provider_info
+                            .unwrap_or_else(|| self.config.model_provider.clone());
+                        self.on_update_provider_model(
+                            provider_id.clone(),
+                            provider_info.clone(),
+                            &model,
+                            effort.clone(),
+                        );
+                        self.sync_active_thread_provider_model_setting(
+                            app_server,
+                            provider_id.clone(),
+                            provider_info,
+                            model.clone(),
+                        )
+                        .await;
+                        self.sync_active_thread_reasoning_setting(app_server, effort.clone())
+                            .await;
+                        self.sync_active_thread_service_tier_to_cached_session()
+                            .await;
+                        match app_server.refresh_available_models().await {
+                            Ok(models) => {
+                                self.model_catalog =
+                                    Arc::new(crate::model_catalog::ModelCatalog::new(models));
+                                self.chat_widget
+                                    .set_model_catalog(self.model_catalog.clone());
+                            }
+                            Err(err) => self.chat_widget.add_error_message(format!(
+                                "Model changed, but Codex could not refresh models: {err}"
+                            )),
+                        }
+                        self.chat_widget.add_info_message(
+                            format!("Model changed to {provider_id}/{model}"),
+                            /*hint*/ None,
+                        );
+                    }
+                    Err(err) => {
+                        let err = crate::config_update::format_config_error(&err);
+                        self.chat_widget.add_error_message(format!(
+                            "Failed to save provider model selection: {err}"
                         ));
                     }
                 }

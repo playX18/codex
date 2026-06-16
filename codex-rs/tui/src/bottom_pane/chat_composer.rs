@@ -190,6 +190,7 @@ use super::mentions_v2::MentionV2Selection;
 use super::paste_burst::CharDecision;
 use super::paste_burst::PasteBurst;
 use super::prompt_args::parse_slash_name;
+use super::shutdown_feedback;
 use super::skill_popup::MentionItem;
 use super::skill_popup::SkillPopup;
 use super::slash_commands::BuiltinCommandFlags;
@@ -381,6 +382,8 @@ pub(crate) struct ChatComposer {
     personality_command_enabled: bool,
     windows_degraded_sandbox_active: bool,
     side_conversation_active: bool,
+    shutdown_in_progress: bool,
+    animations_enabled: bool,
     history_search: Option<HistorySearchSession>,
     submit_keys: Vec<KeyBinding>,
     queue_keys: Vec<KeyBinding>,
@@ -502,6 +505,7 @@ impl ChatComposer {
                 context_window_percent: None,
                 context_window_used_tokens: None,
                 collaboration_mode_indicator: None,
+                third_party_provider_label: None,
                 goal_status_indicator: None,
                 ide_context_active: false,
                 status_line_value: None,
@@ -545,6 +549,8 @@ impl ChatComposer {
             personality_command_enabled: false,
             windows_degraded_sandbox_active: false,
             side_conversation_active: false,
+            shutdown_in_progress: false,
+            animations_enabled: true,
             history_search: None,
             submit_keys: vec![key_hint::plain(KeyCode::Enter)],
             queue_keys: vec![key_hint::plain(KeyCode::Tab)],
@@ -564,6 +570,10 @@ impl ChatComposer {
 
     pub(crate) fn set_frame_requester(&mut self, frame_requester: FrameRequester) {
         self.frame_requester = Some(frame_requester);
+    }
+
+    pub(crate) fn set_animations_enabled(&mut self, animations_enabled: bool) {
+        self.animations_enabled = animations_enabled;
     }
 
     pub fn set_skill_mentions(&mut self, skills: Option<Vec<SkillMetadata>>) {
@@ -684,6 +694,10 @@ impl ChatComposer {
 
     pub fn set_ide_context_active(&mut self, active: bool) {
         self.footer.ide_context_active = active;
+    }
+
+    pub fn set_third_party_provider_label(&mut self, label: Option<String>) {
+        self.footer.third_party_provider_label = label;
     }
 
     pub fn set_personality_command_enabled(&mut self, enabled: bool) {
@@ -1083,6 +1097,7 @@ impl ChatComposer {
             self.footer.collaboration_mode_indicator,
             self.footer.goal_status_indicator.as_ref(),
             self.footer.ide_context_active,
+            self.footer.third_party_provider_label.as_deref(),
             show_cycle_hint,
         ) {
             if !spans.is_empty() {
@@ -1179,11 +1194,6 @@ impl ChatComposer {
             .take_remote_image_urls(&mut self.draft.textarea);
         self.sync_popups();
         urls
-    }
-
-    #[cfg(test)]
-    pub(crate) fn show_footer_flash(&mut self, line: Line<'static>, duration: Duration) {
-        self.footer.show_flash(line, duration);
     }
 
     /// Replace the entire composer content with `text` and reset cursor.
@@ -3875,7 +3885,8 @@ impl ChatComposer {
     }
 
     pub(crate) fn show_shutdown_in_progress(&mut self) {
-        self.set_input_enabled(/*enabled*/ false, Some("Shutting down...".to_string()));
+        self.shutdown_in_progress = true;
+        self.set_input_enabled(/*enabled*/ false, None);
         self.footer.quit_shortcut_expires_at = None;
         self.footer.mode = FooterMode::ComposerEmpty;
         self.footer.hint_override = Some(Vec::new());
@@ -4444,19 +4455,23 @@ impl ChatComposer {
             }
         }
         if !self.draft.input_enabled || textarea_is_empty {
-            let text = if self.draft.input_enabled {
-                self.placeholder_text.as_str().to_string()
+            let text = if self.shutdown_in_progress {
+                shutdown_feedback::shutdown_placeholder_line(
+                    self.animations_enabled,
+                    self.frame_requester.as_ref(),
+                )
+            } else if self.draft.input_enabled {
+                Line::from(self.placeholder_text.as_str().to_string().dim())
             } else {
-                self.draft
+                let placeholder = self
+                    .draft
                     .input_disabled_placeholder
                     .as_deref()
-                    .unwrap_or("Input disabled.")
-                    .to_string()
+                    .unwrap_or("Input disabled.");
+                Line::from(placeholder.to_string().dim())
             };
             if !textarea_rect.is_empty() {
-                let placeholder = Span::from(text).dim();
-                Line::from(vec![placeholder])
-                    .render_ref(textarea_rect.inner(Margin::new(0, 0)), buf);
+                text.render_ref(textarea_rect.inner(Margin::new(0, 0)), buf);
             }
         }
     }
@@ -4550,7 +4565,9 @@ mod tests {
             /*disable_paste_burst*/ false,
         );
         composer.set_footer_hint_override(Some(vec![("K".to_string(), "label".to_string())]));
-        composer.show_footer_flash(Line::from("FLASH"), Duration::from_secs(10));
+        composer
+            .footer
+            .show_flash(Line::from("FLASH"), Duration::from_secs(10));
 
         let area = Rect::new(0, 0, 60, 6);
         let mut buf = Buffer::empty(area);
@@ -4588,7 +4605,9 @@ mod tests {
             /*disable_paste_burst*/ false,
         );
         composer.set_footer_hint_override(Some(vec![("K".to_string(), "label".to_string())]));
-        composer.show_footer_flash(Line::from("FLASH"), Duration::from_secs(10));
+        composer
+            .footer
+            .show_flash(Line::from("FLASH"), Duration::from_secs(10));
         composer.footer.flash.as_mut().unwrap().expires_at =
             Instant::now() - Duration::from_secs(1);
 
@@ -11170,6 +11189,7 @@ mod tests {
         );
 
         composer.set_text_content("hello".to_string(), Vec::new(), Vec::new());
+        composer.set_animations_enabled(/*animations_enabled*/ false);
         composer.show_shutdown_in_progress();
 
         assert!(!composer.input_enabled());

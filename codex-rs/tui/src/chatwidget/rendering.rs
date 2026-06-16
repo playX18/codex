@@ -122,6 +122,7 @@ impl TranscriptAreaRenderable<'_> {
 impl Renderable for ChatWidget {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         self.as_renderable().render(area, buf);
+        self.bottom_pane.render_toast_overlay(area, buf);
         self.last_rendered_width.set(Some(area.width as usize));
     }
 

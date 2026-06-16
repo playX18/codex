@@ -55,7 +55,7 @@ use crate::model_catalog::ModelCatalog;
 use crate::model_migration::ModelMigrationOutcome;
 use crate::model_migration::migration_copy_for_models;
 use crate::model_migration::run_model_migration_prompt;
-use crate::multi_agents::agent_picker_status_dot_spans;
+use crate::multi_agents::agent_picker_status_dot_spans_for_entry;
 use crate::multi_agents::format_agent_picker_item_name;
 use crate::multi_agents::next_agent_shortcut_matches;
 use crate::multi_agents::previous_agent_shortcut_matches;
@@ -617,7 +617,7 @@ fn active_turn_not_steerable_turn_error(error: &TypedRequestError) -> Option<App
 }
 
 async fn resolve_runtime_model_provider_base_url(provider: &ModelProviderInfo) -> Option<String> {
-    let provider = create_model_provider(provider.clone(), /*auth_manager*/ None);
+    let provider = create_model_provider(provider.clone(), /*auth_manager*/ None, None);
     match provider.runtime_base_url().await {
         Ok(base_url) => base_url,
         Err(err) => {
@@ -695,7 +695,7 @@ fn session_start_error(
 fn archived_session_guidance(err: &color_eyre::eyre::Report) -> Option<String> {
     let err = err.to_string();
     let message = &err[err.find("session ")?..];
-    if !message.contains(" is archived. Run `codex unarchive ") {
+    if !message.contains(" is archived. Run `codexium unarchive ") {
         return None;
     }
     let message = message

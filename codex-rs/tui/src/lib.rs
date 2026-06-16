@@ -180,6 +180,7 @@ mod terminal_visualization_instructions;
 mod text_formatting;
 mod theme_picker;
 mod thread_transcript;
+mod token_throughput;
 mod token_usage;
 mod tooltips;
 mod transcript_reflow;
@@ -1463,7 +1464,7 @@ async fn run_ratatui_app(
             resume_hint: None,
             update_action: None,
             exit_reason: ExitReason::Fatal(format!(
-                "No saved session found with ID {id_str}. Run `codex {action}` without an ID to choose from existing sessions."
+                "No saved session found with ID {id_str}. Run `codexium {action}` without an ID to choose from existing sessions."
             )),
         })
     };

@@ -69,6 +69,13 @@ pub(crate) struct HistoryLookupResponse {
     pub(crate) entry: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ProviderModelPickerItem {
+    pub(crate) provider_id: String,
+    pub(crate) provider_name: String,
+    pub(crate) model: ModelPreset,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConsolidationScrollbackReflow {
     IfResizeReflowRan,
@@ -674,6 +681,31 @@ pub(crate) enum AppEvent {
         personality: Personality,
     },
 
+    /// Open the API-key prompt for the selected provider.
+    OpenProviderApiKeyPrompt {
+        provider_id: String,
+        provider_name: String,
+    },
+
+    /// Store provider API-key auth, activate the provider, and refresh models.
+    ProviderApiKeySubmitted {
+        provider_id: String,
+        api_key: String,
+    },
+
+    /// Persist the selected model and its provider to the appropriate config.
+    PersistProviderModelSelection {
+        provider_id: String,
+        model: String,
+        effort: Option<ReasoningEffort>,
+    },
+
+    /// Open the provider-aware model picker with an optional provider filter.
+    OpenProviderModelsPopup {
+        models: Vec<ProviderModelPickerItem>,
+        provider_filter: Option<String>,
+    },
+
     /// Persist the selected service tier to the appropriate config.
     PersistServiceTierSelection {
         service_tier: Option<String>,
@@ -694,6 +726,15 @@ pub(crate) enum AppEvent {
     OpenAllModelsPopup {
         models: Vec<ModelPreset>,
     },
+
+    /// Set optional Compose subagent model defaults chosen via /compose-models.
+    SetComposeSubagentModelPrefs {
+        model: String,
+        reasoning: Option<ReasoningEffort>,
+    },
+
+    /// Clear optional Compose subagent model defaults (return to automated selection).
+    ClearComposeSubagentModelPrefs,
 
     /// Open the confirmation prompt before enabling full access mode.
     OpenFullAccessConfirmation {

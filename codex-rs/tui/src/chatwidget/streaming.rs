@@ -118,6 +118,7 @@ impl ChatWidget {
         }
         if !delta.is_empty() {
             self.record_visible_turn_activity();
+            self.record_statusline_stream_activity();
         }
         if !self.transcript.plan_item_active {
             self.transcript.plan_item_active = true;
@@ -201,6 +202,9 @@ impl ChatWidget {
         // For reasoning deltas, do not stream to history. Accumulate the
         // current reasoning block and extract the first bold element
         // (between **/**) as the chunk header. Show this header as status.
+        if !delta.is_empty() {
+            self.record_statusline_stream_activity();
+        }
         self.reasoning_buffer.push_str(&delta);
 
         if self.unified_exec_wait_streak.is_some() {
@@ -383,6 +387,7 @@ impl ChatWidget {
     pub(super) fn handle_streaming_delta(&mut self, delta: String) {
         if !delta.is_empty() {
             self.record_visible_turn_activity();
+            self.record_statusline_stream_activity();
         }
         if self.stream_controller.is_none() {
             // Before starting an agent stream, flush any active exec cell group.

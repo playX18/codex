@@ -198,6 +198,12 @@ impl ChatWidget {
         self.model_catalog.clone()
     }
 
+    pub(crate) fn set_model_catalog(&mut self, model_catalog: Arc<ModelCatalog>) {
+        self.model_catalog = model_catalog;
+        self.refresh_effective_service_tier();
+        self.refresh_model_dependent_surfaces();
+    }
+
     pub(crate) fn current_plan_type(&self) -> Option<PlanType> {
         self.plan_type
     }
@@ -444,10 +450,50 @@ impl ChatWidget {
         if !self.collaboration_modes_enabled() {
             return self.current_collaboration_mode.clone();
         }
-        self.active_collaboration_mask.as_ref().map_or_else(
+        let mut mode = self.active_collaboration_mask.as_ref().map_or_else(
             || self.current_collaboration_mode.clone(),
             |mask| self.current_collaboration_mode.apply_mask(mask),
-        )
+        );
+        if mode.mode == ModeKind::Compose
+            && let Some(prefs) = &self.compose_subagent_model_prefs
+        {
+            let fragment = collaboration_modes::compose_subagent_model_pref_instructions(prefs);
+            match &mut mode.settings.developer_instructions {
+                Some(instructions) => {
+                    instructions.push_str("\n\n");
+                    instructions.push_str(&fragment);
+                }
+                instructions @ None => {
+                    *instructions = Some(fragment);
+                }
+            }
+        }
+        mode
+    }
+
+    pub(crate) fn set_compose_subagent_model_prefs(
+        &mut self,
+        prefs: Option<collaboration_modes::ComposeSubagentModelPrefs>,
+    ) {
+        self.compose_subagent_model_prefs = prefs;
+        self.submit_collaboration_mode_settings_update();
+        match &self.compose_subagent_model_prefs {
+            Some(prefs) => {
+                let mut message = format!("Subagent default model set to {}", prefs.model);
+                if let Some(effort) = prefs.reasoning_effort.as_ref() {
+                    message.push(' ');
+                    message.push_str(&effort.to_string());
+                }
+                self.add_info_message(message, /*hint*/ None);
+            }
+            None => {
+                self.add_info_message(
+                    "Subagent model selection is automated again.".to_string(),
+                    /*hint*/ None,
+                );
+            }
+        }
+        self.request_redraw();
     }
 
     pub(super) fn refresh_model_display(&mut self) {
@@ -589,6 +635,7 @@ impl ChatWidget {
         }
         match self.active_mode_kind() {
             ModeKind::Plan => Some(CollaborationModeIndicator::Plan),
+            ModeKind::Compose => Some(CollaborationModeIndicator::Compose),
             ModeKind::Default | ModeKind::PairProgramming | ModeKind::Execute => None,
         }
     }
@@ -646,7 +693,7 @@ impl ChatWidget {
         self.update_collaboration_mode_indicator();
     }
 
-    /// Cycle to the next collaboration mode variant (Plan -> Default -> Plan).
+    /// Cycle to the next collaboration mode preset in list order.
     pub(super) fn cycle_collaboration_mode(&mut self) {
         if !self.collaboration_modes_enabled() {
             return;
@@ -712,7 +759,7 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    fn submit_collaboration_mode_settings_update(&self) {
+    pub(crate) fn submit_collaboration_mode_settings_update(&self) {
         let Some(thread_id) = self.thread_id else {
             return;
         };

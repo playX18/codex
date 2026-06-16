@@ -113,6 +113,7 @@ impl ChatWidget {
             skills_initial_state: None,
             current_collaboration_mode,
             active_collaboration_mask,
+            compose_subagent_model_prefs: None,
             has_chatgpt_account,
             has_codex_backend_auth,
             model_catalog,
@@ -229,6 +230,8 @@ impl ChatWidget {
             external_editor_state: ExternalEditorState::Closed,
             last_rendered_user_message_display: None,
             last_non_retry_error: None,
+            token_throughput: TokenThroughputState::default(),
+            status_line_throughput_refresh_at: None,
         };
 
         widget.prefetch_rate_limits();
@@ -260,6 +263,7 @@ impl ChatWidget {
                 WindowsSandboxLevel::RestrictedToken
             ));
         widget.update_collaboration_mode_indicator();
+        widget.update_provider_indicator();
 
         widget
             .bottom_pane
@@ -268,6 +272,7 @@ impl ChatWidget {
             .bottom_pane
             .set_token_activity_command_enabled(widget.has_codex_backend_auth);
         widget.refresh_status_surfaces();
+        widget.maybe_show_pet_companion_discoverability_hint();
 
         widget
     }

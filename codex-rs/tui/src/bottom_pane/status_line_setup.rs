@@ -124,6 +124,18 @@ pub(crate) enum StatusLineItem {
     /// Total output tokens generated.
     TotalOutputTokens,
 
+    /// Live or last-turn token throughput.
+    #[strum(to_string = "token-throughput", serialize = "tokens-per-second")]
+    TokenThroughput,
+
+    /// Estimated session API cost from models.dev pricing.
+    #[strum(to_string = "session-cost-estimate")]
+    SessionCostEstimate,
+
+    /// Estimated last-turn API cost from models.dev pricing.
+    #[strum(to_string = "turn-cost-estimate")]
+    TurnCostEstimate,
+
     /// Full thread UUID.
     #[strum(to_string = "thread-id", serialize = "session-id")]
     SessionId,
@@ -179,6 +191,15 @@ impl StatusLineItem {
             StatusLineItem::UsedTokens => "Total tokens used in session (omitted when zero)",
             StatusLineItem::TotalInputTokens => "Total input tokens used in session",
             StatusLineItem::TotalOutputTokens => "Total output tokens used in session",
+            StatusLineItem::TokenThroughput => {
+                "Token throughput while streaming, or last completed turn when idle"
+            }
+            StatusLineItem::SessionCostEstimate => {
+                "Estimated session API cost from models.dev pricing (omitted when unknown)"
+            }
+            StatusLineItem::TurnCostEstimate => {
+                "Estimated last-turn API cost from models.dev pricing (omitted when unknown)"
+            }
             StatusLineItem::SessionId => "Current thread identifier (omitted until thread starts)",
             StatusLineItem::FastMode => "Whether Fast mode is currently active",
             StatusLineItem::RawOutput => "Whether raw scrollback mode is active",
@@ -213,6 +234,9 @@ impl StatusLineItem {
             StatusLineItem::UsedTokens => StatusSurfacePreviewItem::UsedTokens,
             StatusLineItem::TotalInputTokens => StatusSurfacePreviewItem::TotalInputTokens,
             StatusLineItem::TotalOutputTokens => StatusSurfacePreviewItem::TotalOutputTokens,
+            StatusLineItem::TokenThroughput => StatusSurfacePreviewItem::TokenThroughput,
+            StatusLineItem::SessionCostEstimate => StatusSurfacePreviewItem::SessionCostEstimate,
+            StatusLineItem::TurnCostEstimate => StatusSurfacePreviewItem::TurnCostEstimate,
             StatusLineItem::SessionId => StatusSurfacePreviewItem::SessionId,
             StatusLineItem::FastMode => StatusSurfacePreviewItem::FastMode,
             StatusLineItem::RawOutput => StatusSurfacePreviewItem::RawOutput,

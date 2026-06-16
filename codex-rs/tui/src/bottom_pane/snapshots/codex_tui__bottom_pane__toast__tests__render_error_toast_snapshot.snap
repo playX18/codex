@@ -1,0 +1,12 @@
+---
+source: tui/src/bottom_pane/toast_tests.rs
+expression: terminal.backend()
+---
+"                                                            "
+"  ┃                                                      │  "
+"  ┃                                                      │  "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "
+"                                                            "

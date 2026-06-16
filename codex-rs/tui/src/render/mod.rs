@@ -2,7 +2,9 @@ use ratatui::layout::Rect;
 
 pub(crate) mod highlight;
 pub(crate) mod line_utils;
+pub(crate) mod list_progress;
 pub(crate) mod renderable;
+pub(crate) mod step_card;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Insets {

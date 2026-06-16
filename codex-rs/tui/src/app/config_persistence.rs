@@ -740,6 +740,28 @@ impl App {
         self.chat_widget.set_reasoning_effort(effort);
     }
 
+    pub(super) fn on_update_model(&mut self, model: &str) {
+        // TODO(aibrahim): Remove this and don't use config as a state object.
+        // Instead, explicitly pass the stored collaboration mode's model into new sessions.
+        self.config.model = Some(model.to_string());
+        self.chat_widget.set_model(model);
+    }
+
+    pub(super) fn on_update_provider_model(
+        &mut self,
+        provider_id: String,
+        provider_info: codex_model_provider_info::ModelProviderInfo,
+        model: &str,
+        effort: Option<ReasoningEffortConfig>,
+    ) {
+        self.config.model_provider_id = provider_id.clone();
+        self.config.model_provider = provider_info.clone();
+        self.chat_widget
+            .on_provider_switched(provider_id, provider_info);
+        self.on_update_model(model);
+        self.on_update_reasoning_effort(effort);
+    }
+
     pub(super) fn on_update_personality(&mut self, personality: Personality) {
         self.config.personality = Some(personality);
         self.chat_widget.set_personality(personality);

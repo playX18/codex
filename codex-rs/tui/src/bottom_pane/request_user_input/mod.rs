@@ -45,6 +45,7 @@ use codex_app_server_protocol::ToolRequestUserInputOption;
 use codex_app_server_protocol::ToolRequestUserInputParams;
 use codex_app_server_protocol::ToolRequestUserInputQuestion;
 use codex_app_server_protocol::ToolRequestUserInputResponse;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::user_input::TextElement;
 use unicode_width::UnicodeWidthStr;
 
@@ -65,6 +66,46 @@ const UNANSWERED_CONFIRM_SUBMIT_DESC_SINGULAR: &str = "question";
 const UNANSWERED_CONFIRM_SUBMIT_DESC_PLURAL: &str = "questions";
 const AUTO_RESOLUTION_HIDDEN_GRACE: Duration = Duration::from_secs(/*secs*/ 60);
 const AUTO_RESOLUTION_VISIBLE_COUNTDOWN: Duration = Duration::from_secs(/*secs*/ 60);
+
+fn compose_subagent_prefs_from_answers(
+    answers: &HashMap<String, ToolRequestUserInputAnswer>,
+) -> Option<AppEvent> {
+    let automated = answers
+        .get("compose-subagent-model")
+        .and_then(|answer| answer.answers.first())
+        .map(|label| label.trim().eq_ignore_ascii_case("automated"))
+        .unwrap_or(false);
+    if automated {
+        return Some(AppEvent::ClearComposeSubagentModelPrefs);
+    }
+
+    let model = answers
+        .get("compose-subagent-model")
+        .and_then(|answer| answer.answers.first())
+        .map(|label| label.trim().to_string())
+        .filter(|model| !model.is_empty());
+
+    let reasoning = answers
+        .get("compose-subagent-reasoning")
+        .and_then(|answer| answer.answers.first())
+        .and_then(|label| parse_compose_reasoning_label(label));
+
+    model
+        .filter(|model| !model.is_empty())
+        .map(|model| AppEvent::SetComposeSubagentModelPrefs { model, reasoning })
+}
+
+fn parse_compose_reasoning_label(label: &str) -> Option<ReasoningEffort> {
+    match label.trim().to_ascii_lowercase().as_str() {
+        "none" => Some(ReasoningEffort::None),
+        "minimal" => Some(ReasoningEffort::Minimal),
+        "low" => Some(ReasoningEffort::Low),
+        "medium" => Some(ReasoningEffort::Medium),
+        "high" => Some(ReasoningEffort::High),
+        "xhigh" | "x-high" | "extra high" => Some(ReasoningEffort::XHigh),
+        _ => None,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Focus {
@@ -909,6 +950,9 @@ impl RequestUserInputOverlay {
                     answers: answer_list,
                 },
             );
+        }
+        if let Some(event) = compose_subagent_prefs_from_answers(&answers) {
+            self.app_event_tx.send(event);
         }
         self.app_event_tx.user_input_answer(
             self.request.turn_id.clone(),

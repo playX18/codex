@@ -633,6 +633,11 @@ impl ChatWidget {
                 "{} out",
                 format_tokens_compact(self.status_line_total_usage().output_tokens)
             )),
+            StatusLineItem::TokenThroughput => {
+                self.status_line_token_throughput_value(Instant::now())
+            }
+            StatusLineItem::SessionCostEstimate => self.status_line_session_cost_estimate_value(),
+            StatusLineItem::TurnCostEstimate => self.status_line_turn_cost_estimate_value(),
             StatusLineItem::SessionId => self.thread_id.map(|id| id.to_string()),
             StatusLineItem::FastMode => Some(
                 if self.current_service_tier() == Some(ServiceTier::Fast.request_value()) {
@@ -690,6 +695,9 @@ impl ChatWidget {
             StatusSurfacePreviewItem::UsedTokens => StatusLineItem::UsedTokens,
             StatusSurfacePreviewItem::TotalInputTokens => StatusLineItem::TotalInputTokens,
             StatusSurfacePreviewItem::TotalOutputTokens => StatusLineItem::TotalOutputTokens,
+            StatusSurfacePreviewItem::TokenThroughput => StatusLineItem::TokenThroughput,
+            StatusSurfacePreviewItem::SessionCostEstimate => StatusLineItem::SessionCostEstimate,
+            StatusSurfacePreviewItem::TurnCostEstimate => StatusLineItem::TurnCostEstimate,
             StatusSurfacePreviewItem::SessionId => StatusLineItem::SessionId,
             StatusSurfacePreviewItem::FastMode => StatusLineItem::FastMode,
             StatusSurfacePreviewItem::RawOutput => StatusLineItem::RawOutput,

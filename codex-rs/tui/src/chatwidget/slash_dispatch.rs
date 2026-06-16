@@ -81,6 +81,26 @@ impl ChatWidget {
         self.bottom_pane.record_pending_slash_command_history();
     }
 
+    fn apply_compose_slash_command(&mut self) -> bool {
+        if !self.collaboration_modes_enabled() {
+            self.add_info_message(
+                "Collaboration modes are disabled.".to_string(),
+                Some("Enable collaboration modes to use /compose.".to_string()),
+            );
+            return false;
+        }
+        if let Some(mask) = collaboration_modes::compose_mask(self.model_catalog.as_ref()) {
+            self.set_collaboration_mask_from_user_action(mask);
+            true
+        } else {
+            self.add_info_message(
+                "Compose mode unavailable right now.".to_string(),
+                /*hint*/ None,
+            );
+            false
+        }
+    }
+
     fn apply_plan_slash_command(&mut self) -> bool {
         if !self.collaboration_modes_enabled() {
             self.add_info_message(
@@ -264,11 +284,20 @@ impl ChatWidget {
             SlashCommand::Model => {
                 self.open_model_popup();
             }
+            SlashCommand::Provider => {
+                self.open_provider_popup();
+            }
             SlashCommand::Personality => {
                 self.open_personality_popup();
             }
             SlashCommand::Plan => {
                 self.apply_plan_slash_command();
+            }
+            SlashCommand::Compose => {
+                self.apply_compose_slash_command();
+            }
+            SlashCommand::ComposeModels => {
+                self.open_compose_subagent_model_picker();
             }
             SlashCommand::Goal => {
                 if !self.config.features.enabled(Feature::Goals) {
@@ -732,6 +761,27 @@ impl ChatWidget {
                     self.queue_user_message(user_message);
                 }
             }
+            SlashCommand::Compose if !trimmed.is_empty() => {
+                if !self.apply_compose_slash_command() {
+                    return;
+                }
+                let user_message = self.prepared_inline_user_message(
+                    args,
+                    text_elements,
+                    local_images,
+                    remote_image_urls,
+                    mention_bindings,
+                    source,
+                );
+                if self.is_session_configured() {
+                    self.reasoning_buffer.clear();
+                    self.full_reasoning_buffer.clear();
+                    self.set_status_header(String::from("Working"));
+                    self.submit_user_message(user_message);
+                } else {
+                    self.queue_user_message(user_message);
+                }
+            }
             SlashCommand::Goal if !trimmed.is_empty() => {
                 if !self.config.features.enabled(Feature::Goals) {
                     if source == SlashCommandDispatchSource::Live {
@@ -1060,8 +1110,11 @@ impl ChatWidget {
             | SlashCommand::Compact
             | SlashCommand::Review
             | SlashCommand::Model
+            | SlashCommand::Provider
             | SlashCommand::Personality
             | SlashCommand::Plan
+            | SlashCommand::Compose
+            | SlashCommand::ComposeModels
             | SlashCommand::Goal
             | SlashCommand::Side
             | SlashCommand::Btw

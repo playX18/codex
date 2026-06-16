@@ -13,6 +13,7 @@ pub enum SlashCommand {
     // DO NOT ALPHA-SORT! Enum order is presentation order in the popup, so
     // more frequently used commands should be listed first.
     Model,
+    Provider,
     Ide,
     Permissions,
     Keymap,
@@ -39,6 +40,9 @@ pub enum SlashCommand {
     Init,
     Compact,
     Plan,
+    Compose,
+    #[strum(serialize = "compose-models")]
+    ComposeModels,
     Goal,
     Agent,
     Side,
@@ -114,11 +118,16 @@ impl SlashCommand {
             SlashCommand::MemoryDrop => "DO NOT USE",
             SlashCommand::MemoryUpdate => "DO NOT USE",
             SlashCommand::Model => "choose what model and reasoning effort to use",
+            SlashCommand::Provider => "switch between ChatGPT and third-party model providers",
             SlashCommand::Ide => {
                 "include current selection, open files, and other context from your IDE"
             }
             SlashCommand::Personality => "choose a communication style for Codex",
             SlashCommand::Plan => "switch to Plan mode",
+            SlashCommand::Compose => "switch to Compose mode",
+            SlashCommand::ComposeModels => {
+                "optional default model for Compose subagents (automated if unset)"
+            }
             SlashCommand::Goal => "set or view the goal for a long-running task",
             SlashCommand::Agent | SlashCommand::MultiAgents => "switch the active agent thread",
             SlashCommand::Side | SlashCommand::Btw => {
@@ -156,6 +165,8 @@ impl SlashCommand {
             SlashCommand::Review
                 | SlashCommand::Rename
                 | SlashCommand::Plan
+                | SlashCommand::Compose
+                | SlashCommand::ComposeModels
                 | SlashCommand::Goal
                 | SlashCommand::Ide
                 | SlashCommand::Keymap
@@ -195,6 +206,7 @@ impl SlashCommand {
             | SlashCommand::Init
             | SlashCommand::Compact
             | SlashCommand::Model
+            | SlashCommand::Provider
             | SlashCommand::Personality
             | SlashCommand::Permissions
             | SlashCommand::Keymap
@@ -206,6 +218,8 @@ impl SlashCommand {
             | SlashCommand::Import
             | SlashCommand::Review
             | SlashCommand::Plan
+            | SlashCommand::Compose
+            | SlashCommand::ComposeModels
             | SlashCommand::Clear
             | SlashCommand::Logout
             | SlashCommand::MemoryDrop

@@ -2,6 +2,9 @@ use codex_features::FEATURES;
 use codex_protocol::account::PlanType;
 use lazy_static::lazy_static;
 use rand::Rng;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
+use std::time::Duration;
 
 const ANNOUNCEMENT_TIP_URL: &str =
     "https://raw.githubusercontent.com/openai/codex/main/announcement_tip.toml";
@@ -19,26 +22,54 @@ const FREE_GO_TOOLTIP: &str =
 
 const RAW_TOOLTIPS: &str = include_str!("../tooltips.txt");
 
-lazy_static! {
-    static ref TOOLTIPS: Vec<&'static str> = RAW_TOOLTIPS
-        .lines()
-        .map(str::trim)
-        .filter(|line| {
-            if line.is_empty() || line.starts_with('#') {
-                return false;
-            }
-            if !IS_MACOS && !IS_WINDOWS && line.contains("codex app") {
-                return false;
-            }
-            true
-        })
-        .collect();
-    static ref ALL_TOOLTIPS: Vec<&'static str> = {
-        let mut tips = Vec::new();
-        tips.extend(TOOLTIPS.iter().copied());
-        tips.extend(experimental_tooltips());
-        tips
+pub(crate) const TIP_ROTATION_INTERVAL: Duration = Duration::from_secs(10);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Tip {
+    pub(crate) weight: u32,
+    pub(crate) body: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TooltipMode {
+    Pinned(String),
+    Rotating,
+}
+
+fn parse_tip_line(line: &str) -> Option<Tip> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+
+    let (weight, body) = if let Some(rest) = line.strip_prefix("weight=") {
+        let space = rest.find(char::is_whitespace)?;
+        let weight: u32 = rest[..space].parse().ok()?;
+        (weight, rest[space..].trim())
+    } else {
+        (1, line)
     };
+    if body.is_empty() {
+        return None;
+    }
+    if !IS_MACOS && !IS_WINDOWS && body.to_lowercase().contains("codex app") {
+        return None;
+    }
+    Some(Tip {
+        weight,
+        body: body.to_string(),
+    })
+}
+
+lazy_static! {
+    static ref TIP_POOL: Vec<Tip> = RAW_TOOLTIPS
+        .lines()
+        .filter_map(parse_tip_line)
+        .chain(experimental_tooltips().into_iter().map(|body| Tip {
+            weight: 1,
+            body: body.to_string(),
+        }))
+        .collect();
 }
 
 fn experimental_tooltips() -> Vec<&'static str> {
@@ -48,15 +79,17 @@ fn experimental_tooltips() -> Vec<&'static str> {
         .collect()
 }
 
-/// Pick a random tooltip to show to the user when starting Codex.
-pub(crate) fn get_tooltip(plan: Option<PlanType>, fast_mode_enabled: bool) -> Option<String> {
+/// Decide whether the session tip should stay pinned or rotate through the pool.
+pub(crate) fn resolve_tooltip_mode(
+    plan: Option<PlanType>,
+    fast_mode_enabled: bool,
+) -> Option<TooltipMode> {
     let mut rng = rand::rng();
 
     if let Some(announcement) = announcement::fetch_announcement_tip(plan) {
-        return Some(announcement);
+        return Some(TooltipMode::Pinned(announcement));
     }
 
-    // Leave small chance for a random tooltip to be shown.
     if rng.random_ratio(8, 10) {
         match plan {
             Some(plan_type)
@@ -67,11 +100,11 @@ pub(crate) fn get_tooltip(plan: Option<PlanType>, fast_mode_enabled: bool) -> Op
                     || plan_type.is_business_like() =>
             {
                 if let Some(tooltip) = pick_paid_tooltip(&mut rng, fast_mode_enabled) {
-                    return Some(tooltip.to_string());
+                    return Some(TooltipMode::Pinned(tooltip.to_string()));
                 }
             }
             Some(PlanType::Go) | Some(PlanType::Free) => {
-                return Some(FREE_GO_TOOLTIP.to_string());
+                return Some(TooltipMode::Pinned(FREE_GO_TOOLTIP.to_string()));
             }
             _ => {
                 let tooltip = if IS_MACOS {
@@ -79,12 +112,40 @@ pub(crate) fn get_tooltip(plan: Option<PlanType>, fast_mode_enabled: bool) -> Op
                 } else {
                     OTHER_TOOLTIP_NON_MAC
                 };
-                return Some(tooltip.to_string());
+                return Some(TooltipMode::Pinned(tooltip.to_string()));
             }
         }
     }
 
-    pick_tooltip(&mut rng).map(str::to_string)
+    if TIP_POOL.is_empty() {
+        None
+    } else {
+        Some(TooltipMode::Rotating)
+    }
+}
+
+pub(crate) fn tip_at_rotation(rotation: u64, rotation_seed: u64) -> Option<&'static Tip> {
+    if TIP_POOL.is_empty() {
+        return None;
+    }
+    let mut rng = StdRng::seed_from_u64(rotation_seed ^ rotation.rotate_left(17));
+    let index = pick_weighted_index(&TIP_POOL, &mut rng)?;
+    TIP_POOL.get(index)
+}
+
+fn pick_weighted_index<R: Rng + ?Sized>(tips: &[Tip], rng: &mut R) -> Option<usize> {
+    let total: u32 = tips.iter().map(|tip| tip.weight).sum();
+    if total == 0 {
+        return None;
+    }
+    let mut target = rng.random_range(0..total);
+    for (index, tip) in tips.iter().enumerate() {
+        if target < tip.weight {
+            return Some(index);
+        }
+        target -= tip.weight;
+    }
+    Some(tips.len().saturating_sub(1))
 }
 
 fn paid_app_tooltip() -> Option<&'static str> {
@@ -107,16 +168,6 @@ fn pick_paid_tooltip<R: Rng + ?Sized>(
         paid_app_tooltip()
     } else {
         Some(FAST_TOOLTIP)
-    }
-}
-
-fn pick_tooltip<R: Rng + ?Sized>(rng: &mut R) -> Option<&'static str> {
-    if ALL_TOOLTIPS.is_empty() {
-        None
-    } else {
-        ALL_TOOLTIPS
-            .get(rng.random_range(0..ALL_TOOLTIPS.len()))
-            .copied()
     }
 }
 
@@ -330,20 +381,74 @@ mod tests {
     use rand::rngs::StdRng;
 
     #[test]
+    fn weighted_tip_pool_prefers_higher_weights() {
+        let tips = vec![
+            Tip {
+                weight: 1,
+                body: "low".to_string(),
+            },
+            Tip {
+                weight: 50,
+                body: "high".to_string(),
+            },
+        ];
+        let mut high_hits = 0;
+        for seed in 0..100 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            if pick_weighted_index(&tips, &mut rng) == Some(1) {
+                high_hits += 1;
+            }
+        }
+        assert!(
+            high_hits > 70,
+            "expected high-weight tip to dominate, got {high_hits}"
+        );
+    }
+
+    #[test]
+    fn tip_rotation_is_deterministic_for_seed() {
+        let first = tip_at_rotation(2, 99).map(|tip| tip.body.clone());
+        let second = tip_at_rotation(2, 99).map(|tip| tip.body.clone());
+        assert_eq!(first, second);
+        assert!(first.is_some());
+    }
+
+    #[test]
+    fn tip_rotation_changes_across_intervals() {
+        let mut distinct = std::collections::BTreeSet::new();
+        for rotation in 0..8 {
+            if let Some(tip) = tip_at_rotation(rotation, 42) {
+                distinct.insert(tip.body.clone());
+            }
+        }
+        assert!(distinct.len() > 1);
+    }
+
+    #[test]
     fn random_tooltip_returns_some_tip_when_available() {
         let mut rng = StdRng::seed_from_u64(42);
-        assert!(pick_tooltip(&mut rng).is_some());
+        assert!(pick_random_tooltip(&mut rng).is_some());
     }
 
     #[test]
     fn random_tooltip_is_reproducible_with_seed() {
         let expected = {
             let mut rng = StdRng::seed_from_u64(7);
-            pick_tooltip(&mut rng)
+            pick_random_tooltip(&mut rng)
         };
 
         let mut rng = StdRng::seed_from_u64(7);
-        assert_eq!(expected, pick_tooltip(&mut rng));
+        assert_eq!(expected, pick_random_tooltip(&mut rng));
+    }
+
+    fn pick_random_tooltip<R: Rng + ?Sized>(rng: &mut R) -> Option<String> {
+        if TIP_POOL.is_empty() {
+            None
+        } else {
+            TIP_POOL
+                .get(rng.random_range(0..TIP_POOL.len()))
+                .map(|tip| tip.body.clone())
+        }
     }
 
     #[test]

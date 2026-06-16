@@ -56,3 +56,38 @@ pub(crate) fn default_mode_mask(model_catalog: &ModelCatalog) -> Option<Collabor
 pub(crate) fn plan_mask(model_catalog: &ModelCatalog) -> Option<CollaborationModeMask> {
     mask_for_kind(model_catalog, ModeKind::Plan)
 }
+
+pub(crate) fn compose_mask(model_catalog: &ModelCatalog) -> Option<CollaborationModeMask> {
+    mask_for_kind(model_catalog, ModeKind::Compose)
+}
+
+/// Slugs offered when the user optionally sets Compose subagent model defaults.
+pub(crate) const COMPOSE_MODEL_ALLOWLIST: &[&str] =
+    &["gpt-5.5", "gpt-5.4-mini", "gpt-5.3-codex-spark"];
+
+/// Optional user-chosen defaults for subagent `spawn_agent` calls in Compose mode.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ComposeSubagentModelPrefs {
+    pub model: String,
+    pub reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+}
+
+pub(crate) fn compose_subagent_model_pref_instructions(
+    prefs: &ComposeSubagentModelPrefs,
+) -> String {
+    let reasoning = prefs
+        .reasoning_effort
+        .as_ref()
+        .map(std::string::ToString::to_string)
+        .unwrap_or_else(|| "default".to_string());
+    format!(
+        "## User subagent model preference (session)\n\n\
+         The user chose optional defaults for subagents in this Compose session:\n\
+         - model: {}\n\
+         - reasoning_effort: {}\n\n\
+         Use these as the baseline on every `spawn_agent` call. Still apply automated \
+         upgrades when role heuristics require a higher tier (for example reviewers must be \
+         ≥ the implementer's model and effort).",
+        prefs.model, reasoning
+    )
+}

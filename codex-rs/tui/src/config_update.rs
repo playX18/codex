@@ -144,6 +144,58 @@ pub(crate) fn build_oss_provider_edit(provider: &str) -> ConfigEdit {
     replace_config_value("oss_provider", serde_json::json!(provider))
 }
 
+pub(crate) fn build_model_provider_switch_edits(
+    codex_home: &Path,
+    provider_id: &str,
+) -> Vec<ConfigEdit> {
+    use codex_model_provider_info::OPENAI_PROVIDER_ID;
+    use codex_provider_catalog::PROVIDER_CATALOG_DIR;
+
+    let mut edits = vec![replace_config_value(
+        "model_provider",
+        serde_json::json!(provider_id),
+    )];
+    if provider_id == OPENAI_PROVIDER_ID {
+        edits.push(clear_config_value("model_catalog_json"));
+    } else {
+        let catalog_path = codex_home
+            .join(PROVIDER_CATALOG_DIR)
+            .join(format!("{provider_id}.json"));
+        edits.push(replace_config_value(
+            "model_catalog_json",
+            serde_json::json!(catalog_path.to_string_lossy()),
+        ));
+    }
+    edits
+}
+
+pub(crate) fn build_model_provider_config_edit(
+    provider_id: &str,
+    mut provider_info: JsonValue,
+) -> ConfigEdit {
+    strip_json_nulls(&mut provider_info);
+    let provider_key = provider_id.replace('\\', "\\\\").replace('"', "\\\"");
+    replace_config_value(format!("model_providers.\"{provider_key}\""), provider_info)
+}
+
+fn strip_json_nulls(value: &mut JsonValue) {
+    match value {
+        JsonValue::Object(object) => {
+            object.retain(|_, value| !value.is_null());
+            for value in object.values_mut() {
+                strip_json_nulls(value);
+            }
+        }
+        JsonValue::Array(values) => {
+            values.retain(|value| !value.is_null());
+            for value in values {
+                strip_json_nulls(value);
+            }
+        }
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::String(_) => {}
+    }
+}
+
 pub(crate) async fn write_config_batch(
     request_handle: AppServerRequestHandle,
     edits: Vec<ConfigEdit>,
