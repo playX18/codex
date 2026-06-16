@@ -48,15 +48,33 @@ async fn handle_spawn_agent(
     } = invocation;
     let arguments = function_arguments(payload)?;
     let args: SpawnAgentArgs = parse_arguments(&arguments)?;
-    let fork_mode = args.fork_mode()?;
-    let role_name = args
+    let fork_selection = args.fork_mode()?;
+    let fork_mode = fork_selection.mode.clone();
+    let requested_role_name = args
         .agent_type
         .as_deref()
         .map(str::trim)
         .filter(|role| !role.is_empty());
+    let ignores_inherited_overrides = matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory))
+        && !fork_selection.explicit_fork_turns;
+    let role_name = if ignores_inherited_overrides {
+        None
+    } else {
+        requested_role_name
+    };
+    let model = if ignores_inherited_overrides {
+        None
+    } else {
+        args.model.as_deref()
+    };
+    let reasoning_effort = if ignores_inherited_overrides {
+        None
+    } else {
+        args.reasoning_effort.clone()
+    };
 
     let message = args.message.clone();
-    let initial_operation = parse_collab_input(Some(args.message), /*items*/ None)?;
+    let initial_operation = parse_collab_input(Some(message.clone()), /*items*/ None)?;
     let session_source = turn.session_source.clone();
     let child_depth = next_thread_spawn_depth(&session_source);
     let mut config =
@@ -64,19 +82,22 @@ async fn handle_spawn_agent(
     if let Some(service_tier) = args.service_tier.as_ref() {
         config.service_tier = Some(service_tier.clone());
     }
-    if matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory)) {
+    if matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory))
+        && fork_selection.explicit_fork_turns
+    {
         reject_full_fork_spawn_overrides(
-            role_name,
+            requested_role_name,
             args.model.as_deref(),
             args.reasoning_effort.clone(),
         )?;
-    } else {
+    }
+    if !matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory)) {
         apply_requested_spawn_agent_model_overrides(
             &session,
             turn.as_ref(),
             &mut config,
-            args.model.as_deref(),
-            args.reasoning_effort.clone(),
+            model,
+            reasoning_effort.clone(),
         )
         .await?;
         apply_role_to_config(&mut config, role_name)
@@ -104,7 +125,7 @@ async fn handle_spawn_agent(
             "spawned agent is missing a canonical task name".to_string(),
         )
     })?;
-    let spawned_agent = Box::pin(
+    let spawn_result = Box::pin(
         session.services.agent_control.spawn_agent_with_metadata(
             config,
             match initial_operation {
@@ -132,8 +153,45 @@ async fn handle_spawn_agent(
             },
         ),
     )
-    .await
-    .map_err(collab_spawn_error)?;
+    .await;
+    let spawned_agent = match spawn_result {
+        Ok(spawned_agent) => spawned_agent,
+        Err(err) => {
+            session
+                .send_event(
+                    &turn,
+                    CollabAgentSpawnBeginEvent {
+                        call_id: call_id.clone(),
+                        started_at_ms: now_unix_timestamp_ms(),
+                        sender_thread_id: session.thread_id,
+                        prompt: args.message.clone(),
+                        model: model.unwrap_or_default().to_string(),
+                        reasoning_effort: reasoning_effort.clone().unwrap_or_default(),
+                    }
+                    .into(),
+                )
+                .await;
+            session
+                .send_event(
+                    &turn,
+                    CollabAgentSpawnEndEvent {
+                        call_id,
+                        completed_at_ms: now_unix_timestamp_ms(),
+                        sender_thread_id: session.thread_id,
+                        new_thread_id: None,
+                        new_agent_nickname: None,
+                        new_agent_role: role_name.map(str::to_string),
+                        prompt: args.message,
+                        model: model.unwrap_or_default().to_string(),
+                        reasoning_effort: reasoning_effort.unwrap_or_default(),
+                        status: AgentStatus::NotFound,
+                    }
+                    .into(),
+                )
+                .await;
+            return Err(collab_spawn_error(err));
+        }
+    };
     let new_thread_id = spawned_agent.thread_id;
     let agent_snapshot = session
         .services
@@ -167,11 +225,15 @@ async fn handle_spawn_agent(
 
     let hide_agent_metadata = turn.config.multi_agent_v2.hide_spawn_agent_metadata;
     if hide_agent_metadata {
-        Ok(SpawnAgentResult::HiddenMetadata { task_name })
+        Ok(SpawnAgentResult::HiddenMetadata {
+            task_name,
+            next_action: SPAWN_AGENT_V2_NEXT_ACTION,
+        })
     } else {
         Ok(SpawnAgentResult::WithNickname {
             task_name,
             nickname,
+            next_action: SPAWN_AGENT_V2_NEXT_ACTION,
         })
     }
 }
@@ -196,13 +258,18 @@ struct SpawnAgentArgs {
 }
 
 impl SpawnAgentArgs {
-    fn fork_mode(&self) -> Result<Option<SpawnAgentForkMode>, FunctionCallError> {
+    fn fork_mode(&self) -> Result<ForkModeSelection, FunctionCallError> {
         if self.fork_context.is_some() {
             return Err(FunctionCallError::RespondToModel(
                 "fork_context is not supported in MultiAgentV2; use fork_turns instead".to_string(),
             ));
         }
 
+        let explicit_fork_turns = self
+            .fork_turns
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|fork_turns| !fork_turns.is_empty());
         let fork_turns = self
             .fork_turns
             .as_deref()
@@ -211,10 +278,16 @@ impl SpawnAgentArgs {
             .unwrap_or("all");
 
         if fork_turns.eq_ignore_ascii_case("none") {
-            return Ok(None);
+            return Ok(ForkModeSelection {
+                mode: None,
+                explicit_fork_turns,
+            });
         }
         if fork_turns.eq_ignore_ascii_case("all") {
-            return Ok(Some(SpawnAgentForkMode::FullHistory));
+            return Ok(ForkModeSelection {
+                mode: Some(SpawnAgentForkMode::FullHistory),
+                explicit_fork_turns,
+            });
         }
 
         let last_n_turns = fork_turns.parse::<usize>().map_err(|_| {
@@ -228,8 +301,16 @@ impl SpawnAgentArgs {
             ));
         }
 
-        Ok(Some(SpawnAgentForkMode::LastNTurns(last_n_turns)))
+        Ok(ForkModeSelection {
+            mode: Some(SpawnAgentForkMode::LastNTurns(last_n_turns)),
+            explicit_fork_turns,
+        })
     }
+}
+
+struct ForkModeSelection {
+    mode: Option<SpawnAgentForkMode>,
+    explicit_fork_turns: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -238,9 +319,11 @@ pub(crate) enum SpawnAgentResult {
     WithNickname {
         task_name: String,
         nickname: Option<String>,
+        next_action: &'static str,
     },
     HiddenMetadata {
         task_name: String,
+        next_action: &'static str,
     },
 }
 
@@ -261,3 +344,7 @@ impl ToolOutput for SpawnAgentResult {
         tool_output_code_mode_result(self, "spawn_agent")
     }
 }
+
+#[cfg(test)]
+#[path = "spawn_tests.rs"]
+mod tests;

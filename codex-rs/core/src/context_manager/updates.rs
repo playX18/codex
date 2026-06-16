@@ -1,3 +1,4 @@
+use crate::build_compose_skills_catalog_from_outcome;
 use crate::context::CollaborationModeInstructions;
 use crate::context::ContextualUserFragment;
 use crate::context::EnvironmentContext;
@@ -12,6 +13,7 @@ use crate::session::turn_context::TurnContext;
 use crate::shell::Shell;
 use codex_execpolicy::Policy;
 use codex_features::Feature;
+use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Personality;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
@@ -82,9 +84,22 @@ fn build_collaboration_mode_update_item(
     if prev.collaboration_mode.as_ref() != Some(&next.collaboration_mode) {
         // If the next mode has empty developer instructions, this returns None and we emit no
         // update, so prior collaboration instructions remain in the prompt history.
+        let compose_catalog = if next.collaboration_mode.mode == ModeKind::Compose {
+            let catalog = build_compose_skills_catalog_from_outcome(&next.turn_skills.outcome);
+            if catalog.is_empty() {
+                None
+            } else {
+                Some(catalog)
+            }
+        } else {
+            None
+        };
         Some(
-            CollaborationModeInstructions::from_collaboration_mode(&next.collaboration_mode)?
-                .render(),
+            CollaborationModeInstructions::from_collaboration_mode_with_compose_catalog(
+                &next.collaboration_mode,
+                compose_catalog.as_deref(),
+            )?
+            .render(),
         )
     } else {
         None

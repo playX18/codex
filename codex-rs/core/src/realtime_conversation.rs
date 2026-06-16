@@ -27,6 +27,7 @@ use codex_config::config_toml::RealtimeWsVersion;
 use codex_login::CodexAuth;
 use codex_login::default_client::default_headers;
 use codex_login::read_openai_api_key_from_env;
+use codex_model_provider::resolve_provider_env_key_auth;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
@@ -53,6 +54,7 @@ use http::HeaderMap;
 use http::HeaderValue;
 use http::header::AUTHORIZATION;
 use serde_json::json;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -725,7 +727,12 @@ async fn prepare_realtime_start(
     let requested_realtime_session_id = session_config.session_id.clone();
     let extra_headers = match transport {
         ConversationStartTransport::Websocket => {
-            let realtime_api_key = realtime_api_key(auth.as_ref(), &provider)?;
+            let realtime_api_key = realtime_api_key(
+                auth.as_ref(),
+                &provider,
+                config.model_provider_id.as_str(),
+                config.codex_home.as_path(),
+            )?;
             realtime_request_headers(
                 requested_realtime_session_id.as_deref(),
                 Some(realtime_api_key.as_str()),
@@ -1091,8 +1098,13 @@ fn escape_xml_text(input: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn realtime_api_key(auth: Option<&CodexAuth>, provider: &ModelProviderInfo) -> CodexResult<String> {
-    if let Some(api_key) = provider.api_key()? {
+fn realtime_api_key(
+    auth: Option<&CodexAuth>,
+    provider: &ModelProviderInfo,
+    provider_id: &str,
+    codex_home: &Path,
+) -> CodexResult<String> {
+    if let Some(api_key) = resolve_provider_env_key_auth(provider_id, provider, codex_home)? {
         return Ok(api_key);
     }
 

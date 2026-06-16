@@ -206,6 +206,7 @@ async fn handle_spawn_agent(
     Ok(SpawnAgentResult {
         agent_id: new_thread_id.to_string(),
         nickname,
+        next_action: SPAWN_AGENT_V1_NEXT_ACTION,
     })
 }
 
@@ -231,6 +232,7 @@ struct SpawnAgentArgs {
 pub(crate) struct SpawnAgentResult {
     agent_id: String,
     nickname: Option<String>,
+    next_action: &'static str,
 }
 
 impl ToolOutput for SpawnAgentResult {
@@ -250,3 +252,7 @@ impl ToolOutput for SpawnAgentResult {
         tool_output_code_mode_result(self, "spawn_agent")
     }
 }
+
+#[cfg(test)]
+#[path = "spawn_tests.rs"]
+mod tests;

@@ -22,6 +22,7 @@ use crate::tasks::CompactTask;
 use crate::tasks::UserShellCommandMode;
 use crate::tasks::UserShellCommandTask;
 use crate::tasks::execute_user_shell_command;
+use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
@@ -120,12 +121,16 @@ async fn thread_settings_update(
         active_permission_profile,
         windows_sandbox_level,
         model,
+        model_provider,
+        model_provider_info,
         effort,
         summary,
         service_tier,
         collaboration_mode,
         personality,
     } = thread_settings;
+    let model_provider_info = model_provider_info
+        .and_then(|value| serde_json::from_value::<ModelProviderInfo>(value).ok());
     let collaboration_mode = match collaboration_mode {
         Some(collaboration_mode) => collaboration_mode,
         None => {
@@ -148,6 +153,8 @@ async fn thread_settings_update(
         permission_profile,
         active_permission_profile,
         windows_sandbox_level,
+        model_provider,
+        model_provider_info,
         collaboration_mode: Some(collaboration_mode),
         reasoning_summary: summary,
         service_tier,

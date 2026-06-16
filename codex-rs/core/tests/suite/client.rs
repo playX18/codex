@@ -982,6 +982,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        ..Default::default()
     };
 
     let codex_home = TempDir::new().unwrap();
@@ -1014,6 +1015,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
         ))),
         thread_id,
         provider,
+        /*provider_runtime_context*/ None,
         SessionSource::Exec,
         config.model_verbosity,
         /*enable_request_compression*/ false,
@@ -2473,6 +2475,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        ..Default::default()
     };
 
     let codex_home = TempDir::new().unwrap();
@@ -2506,6 +2509,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         /*auth_manager*/ None,
         thread_id,
         provider.clone(),
+        /*provider_runtime_context*/ None,
         SessionSource::Exec,
         config.model_verbosity,
         /*enable_request_compression*/ false,
@@ -3088,6 +3092,7 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        ..Default::default()
     };
 
     // Init session
@@ -3177,6 +3182,7 @@ async fn env_var_overrides_loaded_auth() {
         websocket_connect_timeout_ms: None,
         requires_openai_auth: false,
         supports_websockets: false,
+        ..Default::default()
     };
 
     // Init session

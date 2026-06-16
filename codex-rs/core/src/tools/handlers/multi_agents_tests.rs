@@ -5,7 +5,9 @@ use crate::config::DEFAULT_AGENT_MAX_DEPTH;
 use crate::function_tool::FunctionCallError;
 use crate::init_state_db;
 use crate::session::tests::make_session_and_context;
+use crate::session::tests::make_session_and_context_with_rx;
 use crate::session_prefix::format_inter_agent_completion_message;
+use crate::session_prefix::format_subagent_notification_message;
 use crate::thread_manager::thread_store_from_config;
 use crate::tools::context::ToolOutput;
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
@@ -270,7 +272,7 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
     turn.approval_policy
         .set(AskForApproval::OnRequest)
         .expect("approval policy should be set");
-    turn.provider = create_model_provider(provider_info, turn.auth_manager.clone());
+    turn.provider = create_model_provider(provider_info, turn.auth_manager.clone(), None);
     turn.config = Arc::new(config);
 
     let invocation = invocation(
@@ -306,7 +308,7 @@ async fn spawn_agent_uses_explorer_role_and_preserves_approval_policy() {
     assert_eq!(snapshot.model_provider_id, "ollama");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn spawn_agent_fork_context_rejects_agent_type_override() {
     let (mut session, mut turn) = make_session_and_context().await;
     let role_name = install_role_with_model_override(&mut turn).await;
@@ -375,7 +377,7 @@ async fn spawn_agent_fork_context_rejects_child_model_overrides() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multi_agent_v2_spawn_fork_turns_all_rejects_agent_type_override() {
     let (mut session, mut turn) = make_session_and_context().await;
     let role_name = install_role_with_model_override(&mut turn).await;
@@ -421,9 +423,18 @@ async fn multi_agent_v2_spawn_fork_turns_all_rejects_agent_type_override() {
     );
 }
 
-#[tokio::test]
-async fn multi_agent_v2_spawn_defaults_to_full_fork_and_rejects_child_model_overrides() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multi_agent_v2_spawn_default_full_fork_ignores_child_overrides() {
+    #[derive(Debug, Deserialize)]
+    struct SpawnAgentResult {
+        task_name: String,
+    }
+
     let (mut session, mut turn) = make_session_and_context().await;
+    turn = turn
+        .with_model("gpt-5.4".to_string(), &session.services.models_manager)
+        .await;
+    let role_name = install_role_with_model_override(&mut turn).await;
     let manager = thread_manager();
     let root = manager
         .start_thread((*turn.config).clone())
@@ -437,29 +448,47 @@ async fn multi_agent_v2_spawn_defaults_to_full_fork_and_rejects_child_model_over
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
     set_turn_config(&mut turn, config);
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
 
-    let err = SpawnAgentHandlerV2::default()
+    let output = SpawnAgentHandlerV2::default()
         .handle(invocation(
-            Arc::new(session),
-            Arc::new(turn),
+            session.clone(),
+            turn.clone(),
             "spawn_agent",
             function_payload(json!({
                 "message": "inspect this repo",
                 "task_name": "fork_context_v2",
+                "agent_type": role_name,
                 "model": "gpt-5-child-override",
                 "reasoning_effort": "low"
             })),
         ))
         .await
-        .err()
-        .expect("default full fork should reject child model overrides");
-
-    assert_eq!(
-        err,
-            FunctionCallError::RespondToModel(
-            "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.".to_string(),
+        .expect("implicit full-history fork should ignore child overrides");
+    let (content, _) = expect_text_output(output);
+    let result: SpawnAgentResult =
+        serde_json::from_str(&content).expect("spawn_agent result should be json");
+    let child_thread_id = session
+        .services
+        .agent_control
+        .resolve_agent_reference(
+            session.thread_id,
+            &turn.session_source,
+            result.task_name.as_str(),
         )
-    );
+        .await
+        .expect("spawned task name should resolve");
+    let snapshot = manager
+        .get_thread(child_thread_id)
+        .await
+        .expect("spawned agent thread should exist")
+        .config_snapshot()
+        .await;
+
+    assert_eq!(snapshot.model, "gpt-5.4");
+    assert_eq!(snapshot.model_provider_id, "openai");
+    assert_eq!(snapshot.reasoning_effort, Some(ReasoningEffort::Medium));
 }
 
 #[tokio::test]
@@ -953,7 +982,7 @@ async fn multi_agent_v2_full_history_fork_accepts_explicit_service_tier() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multi_agent_v2_spawn_partial_fork_turns_allows_agent_type_override() {
     let (mut session, mut turn) = make_session_and_context().await;
     let role_name = install_role_with_model_override(&mut turn).await;
@@ -1070,6 +1099,53 @@ async fn multi_agent_v2_spawn_requires_task_name() {
         panic!("missing task_name should surface as a model-facing error");
     };
     assert!(message.contains("missing field `task_name`"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multi_agent_v2_failed_spawn_emits_completed_collab_item() {
+    let (session, turn, rx_event) = make_session_and_context_with_rx().await;
+
+    let Err(err) = SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session,
+            turn,
+            "spawn_agent",
+            function_payload(json!({
+                "message": "inspect this repo",
+                "task_name": "explore",
+                "fork_turns": "none"
+            })),
+        ))
+        .await
+    else {
+        panic!("spawn should fail without an agent control thread manager");
+    };
+
+    assert_eq!(
+        err,
+        FunctionCallError::RespondToModel("collab manager unavailable".to_string())
+    );
+
+    let begin = rx_event
+        .recv()
+        .await
+        .expect("spawn begin event should be emitted");
+    assert!(
+        matches!(begin.msg, EventMsg::CollabAgentSpawnBegin(_)),
+        "expected spawn begin event, got {:?}",
+        begin.msg
+    );
+
+    let end = rx_event
+        .recv()
+        .await
+        .expect("spawn end event should be emitted");
+    let EventMsg::CollabAgentSpawnEnd(end) = end.msg else {
+        panic!("expected spawn end event");
+    };
+    assert_eq!(end.new_thread_id, None);
+    assert_eq!(end.status, AgentStatus::NotFound);
+    assert_eq!(end.prompt, "inspect this repo");
 }
 
 #[tokio::test]
@@ -2953,7 +3029,7 @@ async fn wait_agent_rejects_empty_targets() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
@@ -3072,8 +3148,8 @@ async fn multi_agent_v2_wait_agent_rejects_timeout_below_configured_min() {
     );
 }
 
-#[tokio::test]
-async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multi_agent_v2_wait_agent_rejects_explicit_timeout_without_live_agents() {
     let (session, mut turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
     config
@@ -3085,7 +3161,7 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
     config.multi_agent_v2.default_wait_timeout_ms = 50;
     set_turn_config(&mut turn, config);
 
-    let output = WaitAgentHandlerV2::default()
+    let Err(err) = WaitAgentHandlerV2::default()
         .handle(invocation(
             Arc::new(session),
             Arc::new(turn),
@@ -3093,22 +3169,16 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
             function_payload(json!({"timeout_ms": 1})),
         ))
         .await
-        .expect("wait_agent should succeed");
-    let (content, success) = expect_text_output(output);
-    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
-        serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait timed out.".to_string(),
-            timed_out: true,
-        }
+    else {
+        panic!("wait_agent without live agents should be rejected");
+    };
+    assert!(
+        matches!(err, FunctionCallError::RespondToModel(message) if message.contains("No spawned agents are currently running"))
     );
-    assert_eq!(success, None);
 }
 
-#[tokio::test]
-async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multi_agent_v2_wait_agent_rejects_default_timeout_without_live_agents() {
     let (session, mut turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
     config
@@ -3122,48 +3192,24 @@ async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
     let session = Arc::new(session);
     let turn = Arc::new(turn);
 
-    let early = timeout(
-        Duration::from_millis(/*millis*/ 20),
-        WaitAgentHandlerV2::default().handle(invocation(
-            session.clone(),
-            turn.clone(),
-            "wait_agent",
-            function_payload(json!({})),
-        )),
-    )
-    .await;
-    assert!(
-        early.is_err(),
-        "wait_agent should not return before the configured default timeout"
-    );
-
-    let output = timeout(
-        Duration::from_secs(/*secs*/ 1),
-        WaitAgentHandlerV2::default().handle(invocation(
+    let Err(err) = WaitAgentHandlerV2::default()
+        .handle(invocation(
             session,
             turn,
             "wait_agent",
             function_payload(json!({})),
-        )),
-    )
-    .await
-    .expect("configured default should be shorter than the test timeout")
-    .expect("wait_agent should succeed");
-    let (content, success) = expect_text_output(output);
-    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
-        serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait timed out.".to_string(),
-            timed_out: true,
-        }
+        ))
+        .await
+    else {
+        panic!("wait_agent without live agents should be rejected");
+    };
+    assert!(
+        matches!(err, FunctionCallError::RespondToModel(message) if message.contains("No spawned agents are currently running"))
     );
-    assert_eq!(success, None);
 }
 
-#[tokio::test]
-async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multi_agent_v2_wait_agent_rejects_zero_timeout_without_live_agents() {
     let (session, mut turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();
     config
@@ -3177,29 +3223,20 @@ async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
     let session = Arc::new(session);
     let turn = Arc::new(turn);
 
-    let output = timeout(
-        Duration::from_secs(/*secs*/ 1),
-        WaitAgentHandlerV2::default().handle(invocation(
+    let Err(err) = WaitAgentHandlerV2::default()
+        .handle(invocation(
             session,
             turn,
             "wait_agent",
             function_payload(json!({})),
-        )),
-    )
-    .await
-    .expect("zero timeout should complete immediately")
-    .expect("wait_agent should succeed");
-    let (content, success) = expect_text_output(output);
-    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
-        serde_json::from_str(&content).expect("wait_agent result should be json");
-    assert_eq!(
-        result,
-        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
-            message: "Wait timed out.".to_string(),
-            timed_out: true,
-        }
+        ))
+        .await
+    else {
+        panic!("wait_agent without live agents should be rejected");
+    };
+    assert!(
+        matches!(err, FunctionCallError::RespondToModel(message) if message.contains("No spawned agents are currently running"))
     );
-    assert_eq!(success, None);
 }
 
 #[tokio::test]
@@ -3436,7 +3473,7 @@ async fn wait_agent_returns_final_status_without_timeout() {
     assert_eq!(success, None);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();

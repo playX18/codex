@@ -66,6 +66,17 @@ impl Handler {
             None => default_timeout_ms,
         };
 
+        let has_running_agents = session
+            .services
+            .agent_control
+            .has_non_final_live_agents()
+            .await;
+        if !has_running_agents {
+            return Err(FunctionCallError::RespondToModel(
+                "No spawned agents are currently running. Call spawn_agent before wait_agent, or continue the task yourself if no subagent work is needed."
+                    .to_string(),
+            ));
+        }
         let turn_state = session
             .input_queue
             .turn_state_for_sub_id(&session.active_turn, &turn.sub_id)

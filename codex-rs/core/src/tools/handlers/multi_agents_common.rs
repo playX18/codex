@@ -30,6 +30,8 @@ use std::collections::HashMap;
 pub(crate) const MIN_WAIT_TIMEOUT_MS: i64 = DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS;
 pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: i64 = 30_000;
 pub(crate) const MAX_WAIT_TIMEOUT_MS: i64 = HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS;
+pub(crate) const SPAWN_AGENT_V1_NEXT_ACTION: &str = "The sub-agent is running in the background. Do not produce your final answer only because spawn_agent succeeded. If this request depends on the sub-agent result, call wait_agent with targets containing this agent_id before finalizing; otherwise continue useful non-overlapping work, then wait when you need the result.";
+pub(crate) const SPAWN_AGENT_V2_NEXT_ACTION: &str = "The sub-agent is running in the background. Do not produce your final answer only because spawn_agent succeeded. If this request depends on the sub-agent result, call wait_agent before finalizing; otherwise continue useful non-overlapping work, then wait when you need the result.";
 
 pub(crate) fn function_arguments(payload: ToolPayload) -> Result<String, FunctionCallError> {
     match payload {

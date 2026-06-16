@@ -1952,7 +1952,7 @@ async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
     assert!(!has_subagent_notification(&root_history_items));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
     let harness = AgentControlHarness::new().await;
     let (_root_thread_id, root_thread) = harness.start_thread().await;
@@ -2006,6 +2006,104 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
         &AgentStatus::Completed(Some("done".to_string())),
     )
     .expect("completed status should render");
+    let expected = (
+        worker_thread_id,
+        Op::InterAgentCommunication {
+            communication: InterAgentCommunication::new(
+                tester_path.clone(),
+                worker_path.clone(),
+                Vec::new(),
+                expected_message.clone(),
+                /*trigger_turn*/ false,
+            ),
+        },
+    );
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let captured = harness
+                .manager
+                .captured_ops()
+                .into_iter()
+                .find(|entry| *entry == expected);
+            if captured == Some(expected.clone()) {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("completion watcher should queue a direct-parent message");
+
+    let root_history_items = root_thread
+        .codex
+        .session
+        .clone_history()
+        .await
+        .raw_items()
+        .to_vec();
+    assert!(!history_contains_assistant_inter_agent_communication(
+        &root_history_items,
+        &InterAgentCommunication::new(
+            tester_path,
+            AgentPath::root(),
+            Vec::new(),
+            expected_message,
+            /*trigger_turn*/ false,
+        )
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn multi_agent_v1_completion_queues_message_for_direct_parent() {
+    let harness = AgentControlHarness::new().await;
+    let (_root_thread_id, root_thread) = harness.start_thread().await;
+    let (worker_thread_id, _worker_thread) = harness.start_thread().await;
+    let tester_thread_id = harness
+        .manager
+        .start_thread(harness.config.clone())
+        .await
+        .expect("tester thread should start")
+        .thread_id;
+    let tester_thread = harness
+        .manager
+        .get_thread(tester_thread_id)
+        .await
+        .expect("tester thread should exist");
+    let worker_path = AgentPath::root().join("worker_a").expect("worker path");
+    let tester_path = worker_path.join("tester").expect("tester path");
+    harness.control.maybe_start_completion_watcher(
+        tester_thread_id,
+        Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: worker_thread_id,
+            depth: 2,
+            agent_path: Some(tester_path.clone()),
+            agent_nickname: None,
+            agent_role: Some("explorer".to_string()),
+        })),
+        tester_path.to_string(),
+        Some(tester_path.clone()),
+    );
+    let tester_turn = tester_thread.codex.session.new_default_turn().await;
+    tester_thread
+        .codex
+        .session
+        .send_event(
+            tester_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: tester_turn.sub_id.clone(),
+                last_agent_message: Some("done".to_string()),
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+
+    let expected_message = crate::session_prefix::format_subagent_notification_message(
+        tester_path.as_str(),
+        &AgentStatus::Completed(Some("done".to_string())),
+    );
     let expected = (
         worker_thread_id,
         Op::InterAgentCommunication {

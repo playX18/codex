@@ -367,6 +367,31 @@
       },
       "type": "object"
     },
+    "CodexChatReasoningConfig": {
+      "additionalProperties": false,
+      "description": "Reasoning capability metadata for Responses→Chat bridging.",
+      "properties": {
+        "effort_param": {
+          "type": "string"
+        },
+        "effort_value_mode": {
+          "type": "string"
+        },
+        "output_format": {
+          "type": "string"
+        },
+        "supports_effort": {
+          "type": "boolean"
+        },
+        "supports_thinking": {
+          "type": "boolean"
+        },
+        "thinking_param": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "ConfigProfile": {
       "additionalProperties": false,
       "description": "Collection of common configuration options that a user can define as a unit in `config.toml`.",
@@ -1503,6 +1528,14 @@
           "description": "Base URL for the provider's OpenAI-compatible API.",
           "type": "string"
         },
+        "codex_chat_reasoning": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/CodexChatReasoningConfig"
+            }
+          ],
+          "description": "Reasoning metadata for Responses→Chat bridging."
+        },
         "env_http_headers": {
           "additionalProperties": {
             "type": "string"
@@ -1568,6 +1601,15 @@
           "default": false,
           "description": "Whether this provider supports the Responses API WebSocket transport.",
           "type": "boolean"
+        },
+        "upstream_wire_api": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/UpstreamWireApi"
+            }
+          ],
+          "default": "responses",
+          "description": "Upstream wire protocol the provider endpoint exposes."
         },
         "websocket_connect_timeout_ms": {
           "description": "Maximum time (in milliseconds) to wait for a websocket connection attempt before treating it as failed.",
@@ -4264,6 +4306,25 @@
       },
       "type": "object"
     },
+    "UpstreamWireApi": {
+      "description": "Upstream wire protocol exposed by the provider endpoint.",
+      "oneOf": [
+        {
+          "description": "Provider speaks OpenAI Responses natively.",
+          "enum": [
+            "responses"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Provider speaks OpenAI Chat Completions; Codex bridges Responses internally.",
+          "enum": [
+            "chat_completions"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "UriBasedFileOpener": {
       "oneOf": [
         {
@@ -4366,7 +4427,7 @@
       "type": "object"
     },
     "WireApi": {
-      "description": "Wire protocol that the provider speaks.",
+      "description": "Wire protocol that Codex speaks internally (always Responses for third-party bridging).",
       "oneOf": [
         {
           "description": "The Responses API exposed by OpenAI at `/v1/responses`.",
@@ -4504,6 +4565,20 @@
     "disable_paste_burst": {
       "description": "When true, disables burst-paste detection for typed input entirely. All characters are inserted as they are received, and no buffering or placeholder replacement will occur for fast keypress bursts.",
       "type": "boolean"
+    },
+    "disabled_providers": {
+      "description": "Optional denylist of models.dev provider ids for `codex providers login`.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "enabled_providers": {
+      "description": "Optional allowlist of models.dev provider ids for `codex providers login`.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
     },
     "experimental_compact_prompt_file": {
       "$ref": "#/definitions/AbsolutePathBuf"

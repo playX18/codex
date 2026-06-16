@@ -97,6 +97,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::PlanDeltaEvent;
 use codex_protocol::protocol::ReasoningContentDeltaEvent;
 use codex_protocol::protocol::ReasoningRawContentDeltaEvent;
+use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TurnDiffEvent;
 use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
@@ -200,6 +201,8 @@ pub(crate) async fn run_turn(
     // However, we defer that drain until after sampling in two cases:
     // 1. At the start of a turn, so the fresh turn input in `input` gets sampled first.
     // 2. After auto-compact, when model/tool continuation needs to resume before any steer.
+    let mut unfinished_plan_nudge_count = 0usize;
+    let mut progress_continuation_nudge_count = 0usize;
 
     loop {
         // Note that pending_input would be something like a message the user
@@ -249,9 +252,24 @@ pub(crate) async fn run_turn(
                     last_agent_message: sampling_request_last_agent_message,
                 } = sampling_request_output;
                 can_drain_pending_input = true;
-                let (has_pending_input, token_status, estimated_token_count) = async {
-                    let has_pending_input =
+                let (mut has_pending_input, token_status, estimated_token_count) = async {
+                    let mut has_pending_input =
                         sess.input_queue.has_pending_input(&sess.active_turn).await;
+                    if !model_needs_follow_up
+                        && !has_pending_input
+                        && root_turn_has_running_multi_agent_children(
+                            sess.as_ref(),
+                            turn_context.as_ref(),
+                        )
+                        .await
+                    {
+                        has_pending_input = wait_for_multi_agent_child_activity(
+                            sess.as_ref(),
+                            turn_context.as_ref(),
+                            &cancellation_token,
+                        )
+                        .await;
+                    }
                     let token_status =
                         auto_compact_token_status(sess.as_ref(), turn_context.as_ref()).await;
                     let estimated_token_count =
@@ -260,6 +278,36 @@ pub(crate) async fn run_turn(
                 }
                 .instrument(trace_span!("run_turn.collect_post_sampling_state"))
                 .await;
+                if !model_needs_follow_up
+                    && !has_pending_input
+                    && turn_context.unfinished_plan_items.load(Ordering::Relaxed)
+                    && unfinished_plan_nudge_count < 3
+                {
+                    unfinished_plan_nudge_count += 1;
+                    let continuation = unfinished_plan_continuation_item();
+                    sess.record_conversation_items(
+                        turn_context.as_ref(),
+                        std::slice::from_ref(&continuation),
+                    )
+                    .await;
+                    has_pending_input = true;
+                }
+                if !model_needs_follow_up
+                    && !has_pending_input
+                    && progress_continuation_nudge_count < 2
+                    && sampling_request_last_agent_message
+                        .as_deref()
+                        .is_some_and(assistant_message_promises_continuation)
+                {
+                    progress_continuation_nudge_count += 1;
+                    let continuation = progress_continuation_item();
+                    sess.record_conversation_items(
+                        turn_context.as_ref(),
+                        std::slice::from_ref(&continuation),
+                    )
+                    .await;
+                    has_pending_input = true;
+                }
                 let needs_follow_up = model_needs_follow_up || has_pending_input;
                 let token_limit_reached = token_status.token_limit_reached;
 
@@ -721,6 +769,132 @@ async fn track_turn_resolved_config_analytics(
             workspace_kind: turn_context.turn_metadata_state.workspace_kind(),
             is_first_turn,
         });
+}
+
+async fn root_turn_has_running_multi_agent_children(
+    sess: &Session,
+    turn_context: &TurnContext,
+) -> bool {
+    if matches!(turn_context.session_source, SessionSource::SubAgent(_)) {
+        return false;
+    }
+    sess.services
+        .agent_control
+        .has_non_final_live_agents()
+        .await
+}
+
+async fn wait_for_multi_agent_child_activity(
+    sess: &Session,
+    turn_context: &TurnContext,
+    cancellation_token: &CancellationToken,
+) -> bool {
+    sess.input_queue
+        .accept_mailbox_delivery_for_current_turn(&sess.active_turn, &turn_context.sub_id)
+        .await;
+    let turn_state = sess
+        .input_queue
+        .turn_state_for_sub_id(&sess.active_turn, &turn_context.sub_id)
+        .await;
+    let (mut activity_rx, pending_activity) = sess
+        .input_queue
+        .subscribe_activity(turn_state.as_deref())
+        .await;
+    if pending_activity.is_some() {
+        return sess.input_queue.has_pending_input(&sess.active_turn).await;
+    }
+    match activity_rx.changed().or_cancel(cancellation_token).await {
+        Ok(Ok(())) => sess.input_queue.has_pending_input(&sess.active_turn).await,
+        Ok(Err(_)) | Err(codex_async_utils::CancelErr::Cancelled) => false,
+    }
+}
+
+fn unfinished_plan_continuation_item() -> ResponseItem {
+    ResponseItem::Message {
+        id: Some(uuid::Uuid::new_v4().to_string()),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "The current todo list still has incomplete items. Continue the task and do not provide a final answer until every todo item is completed or explicitly removed."
+                .to_string(),
+        }],
+        phase: None,
+        metadata: None,
+    }
+}
+
+fn progress_continuation_item() -> ResponseItem {
+    ResponseItem::Message {
+        id: Some(uuid::Uuid::new_v4().to_string()),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "You just described more work you were about to do. Continue that work now. Do not end the turn with a progress update; either take the next concrete action or provide a final answer only when the requested work is complete."
+                .to_string(),
+        }],
+        phase: None,
+        metadata: None,
+    }
+}
+
+fn assistant_message_promises_continuation(message: &str) -> bool {
+    let normalized = message
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    let message = normalized.trim();
+    if message.is_empty()
+        || message.contains("if you want")
+        || message.contains("if you'd like")
+        || message.contains("if you would like")
+    {
+        return false;
+    }
+
+    let promises_action = [
+        "i'll ",
+        "i will ",
+        "i'm going to ",
+        "i am going to ",
+        "let me ",
+        "now i'll ",
+        "now i will ",
+        "now i'm ",
+        "now i am ",
+        "next i'll ",
+        "next i will ",
+        "continuing ",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle));
+    if !promises_action {
+        return false;
+    }
+
+    [
+        "continue",
+        "continuing",
+        "organize",
+        "stage",
+        "commit",
+        "create",
+        "run",
+        "check",
+        "inspect",
+        "read",
+        "edit",
+        "patch",
+        "fix",
+        "implement",
+        "verify",
+        "test",
+        "apply",
+        "mark",
+        "resolve",
+        "resolved",
+        "finalize",
+    ]
+    .iter()
+    .any(|verb| message.contains(verb))
 }
 
 #[derive(Debug)]

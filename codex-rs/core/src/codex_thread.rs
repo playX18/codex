@@ -4,6 +4,7 @@ use crate::session::Codex;
 use crate::session::SessionSettingsUpdate;
 use crate::session::SteerInputError;
 use codex_features::Feature;
+use codex_model_provider_info::ModelProviderInfo;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -144,6 +145,8 @@ pub struct CodexThreadSettingsOverrides {
     pub active_permission_profile: Option<ActivePermissionProfile>,
     pub windows_sandbox_level: Option<WindowsSandboxLevel>,
     pub model: Option<String>,
+    pub model_provider: Option<String>,
+    pub model_provider_info: Option<ModelProviderInfo>,
     pub effort: Option<Option<ReasoningEffort>>,
     pub summary: Option<ReasoningSummary>,
     pub service_tier: Option<Option<String>>,
@@ -357,6 +360,8 @@ impl CodexThread {
             active_permission_profile,
             windows_sandbox_level,
             model,
+            model_provider,
+            model_provider_info,
             effort,
             summary,
             service_tier,
@@ -383,6 +388,8 @@ impl CodexThread {
             permission_profile,
             active_permission_profile,
             windows_sandbox_level,
+            model_provider,
+            model_provider_info,
             collaboration_mode: Some(collaboration_mode),
             reasoning_summary: summary,
             service_tier,

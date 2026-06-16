@@ -16,6 +16,7 @@ pub use codex_core_skills::SkillRenderReport;
 pub use codex_core_skills::SkillsLoadInput;
 pub use codex_core_skills::SkillsManager;
 pub use codex_core_skills::build_available_skills;
+pub use codex_core_skills::build_compose_skills_catalog_from_outcome;
 pub use codex_core_skills::build_skill_name_counts;
 pub use codex_core_skills::config_rules;
 pub use codex_core_skills::default_skill_metadata_budget;

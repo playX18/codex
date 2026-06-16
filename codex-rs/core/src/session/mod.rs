@@ -17,6 +17,7 @@ use crate::agent::status::is_final;
 use crate::agents_md::LoadedAgentsMd;
 use crate::attestation::AttestationProvider;
 use crate::build_available_skills;
+use crate::build_compose_skills_catalog_from_outcome;
 use crate::compact;
 use crate::config::ManagedFeatures;
 use crate::config::resolve_tool_suggest_config_from_layer_stack;
@@ -71,6 +72,7 @@ use codex_mcp::McpConnectionManager;
 use codex_mcp::McpResourceClient;
 use codex_mcp::McpRuntimeContext;
 use codex_mcp::codex_apps_tools_cache_key;
+use codex_model_provider::ProviderRuntimeContext;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_models_manager::manager::SharedModelsManager;
 use codex_network_proxy::NetworkProxy;
@@ -1399,7 +1401,7 @@ impl Session {
         updates: SessionSettingsUpdate,
     ) -> ConstraintResult<()> {
         let notify_config_contributors = !self.services.extensions.config_contributors().is_empty();
-        let (previous_config, new_config, permission_profile_changed) = {
+        let (previous_config, new_config, permission_profile_changed, provider_update) = {
             let mut state = self.state.lock().await;
             let updated = match state.session_configuration.apply(&updates) {
                 Ok(updated) => updated,
@@ -1422,9 +1424,28 @@ impl Session {
                     .turn_environments
                     .update_selections(updated.environment_selections());
             }
+            let provider_update = updates.model_provider.as_ref().map(|_| {
+                (
+                    updated.original_config_do_not_use.model_provider_id.clone(),
+                    updated.provider.clone(),
+                    updated.original_config_do_not_use.codex_home.to_path_buf(),
+                )
+            });
             state.session_configuration = updated;
-            (previous_config, new_config, permission_profile_changed)
+            (
+                previous_config,
+                new_config,
+                permission_profile_changed,
+                provider_update,
+            )
         };
+        if let Some((provider_id, provider_info, codex_home)) = provider_update {
+            self.services.model_client.update_provider(
+                provider_info,
+                Some(Arc::clone(&self.services.auth_manager)),
+                Some(ProviderRuntimeContext::new(provider_id, codex_home)),
+            );
+        }
         self.emit_config_changed_contributors(previous_config.as_ref(), new_config.as_ref());
         if permission_profile_changed {
             self.refresh_managed_network_proxy_for_current_permission_profile()
@@ -1682,16 +1703,12 @@ impl Session {
         }
     }
 
-    /// Forwards terminal turn events from spawned MultiAgentV2 children to their direct parent.
+    /// Forwards terminal turn events from spawned thread children to their direct parent.
     async fn maybe_notify_parent_of_terminal_turn(
         &self,
         turn_context: &TurnContext,
         msg: &EventMsg,
     ) {
-        if turn_context.multi_agent_version != MultiAgentVersion::V2 {
-            return;
-        }
-
         if !matches!(msg, EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)) {
             return;
         }
@@ -1721,7 +1738,7 @@ impl Session {
         .await;
     }
 
-    /// Sends the standard completion envelope from a spawned MultiAgentV2 child to its parent.
+    /// Sends the standard completion envelope from a spawned thread child to its parent.
     async fn forward_child_completion_to_parent(
         &self,
         turn_context: &TurnContext,
@@ -2881,11 +2898,26 @@ impl Session {
             developer_sections.push(developer_instructions.to_string());
         }
         // Add developer instructions from collaboration_mode if they exist and are non-empty
-        if turn_context.config.include_collaboration_mode_instructions
-            && let Some(collab_instructions) =
-                CollaborationModeInstructions::from_collaboration_mode(&collaboration_mode)
-        {
-            developer_sections.push(collab_instructions.render());
+        if turn_context.config.include_collaboration_mode_instructions {
+            let compose_catalog = if collaboration_mode.mode == ModeKind::Compose {
+                let catalog =
+                    build_compose_skills_catalog_from_outcome(&turn_context.turn_skills.outcome);
+                if catalog.is_empty() {
+                    None
+                } else {
+                    Some(catalog)
+                }
+            } else {
+                None
+            };
+            if let Some(collab_instructions) =
+                CollaborationModeInstructions::from_collaboration_mode_with_compose_catalog(
+                    &collaboration_mode,
+                    compose_catalog.as_deref(),
+                )
+            {
+                developer_sections.push(collab_instructions.render());
+            }
         }
         if let Some(realtime_update) = crate::context_manager::updates::build_initial_realtime_item(
             reference_context_item.as_ref(),
@@ -2932,6 +2964,7 @@ impl Session {
                 SkillRenderSideEffects::ThreadStart {
                     session_telemetry: &self.services.session_telemetry,
                 },
+                collaboration_mode.mode == ModeKind::Compose,
             );
             if let Some(available_skills) = available_skills {
                 let warning_message = available_skills.warning_message.clone();

@@ -7,6 +7,7 @@
 
 mod apply_patch;
 mod apps;
+mod bridged_responses_client;
 mod client;
 mod client_common;
 mod realtime_context;
@@ -91,6 +92,7 @@ pub(crate) use skills::SkillLoadOutcome;
 pub(crate) use skills::SkillMetadata;
 pub(crate) use skills::SkillsManager;
 pub(crate) use skills::build_available_skills;
+pub(crate) use skills::build_compose_skills_catalog_from_outcome;
 pub(crate) use skills::build_skill_injections;
 pub(crate) use skills::build_skill_name_counts;
 pub(crate) use skills::collect_explicit_skill_mentions;

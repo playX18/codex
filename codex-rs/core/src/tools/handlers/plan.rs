@@ -9,6 +9,7 @@ use crate::tools::registry::ToolExecutor;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
+use codex_protocol::plan_tool::StepStatus;
 use codex_protocol::plan_tool::UpdatePlanArgs;
 use codex_protocol::protocol::EventMsg;
 use codex_tools::ToolName;
@@ -88,6 +89,12 @@ impl PlanHandler {
         }
 
         let args = parse_update_plan_arguments(&arguments)?;
+        let has_unfinished_items = args
+            .plan
+            .iter()
+            .any(|item| !matches!(item.status, StepStatus::Completed));
+        turn.unfinished_plan_items
+            .store(has_unfinished_items, std::sync::atomic::Ordering::Relaxed);
         session
             .send_event(turn.as_ref(), EventMsg::PlanUpdate(args))
             .await;
@@ -103,3 +110,7 @@ fn parse_update_plan_arguments(arguments: &str) -> Result<UpdatePlanArgs, Functi
         FunctionCallError::RespondToModel(format!("failed to parse function arguments: {e}"))
     })
 }
+
+#[cfg(test)]
+#[path = "plan_tests.rs"]
+mod tests;

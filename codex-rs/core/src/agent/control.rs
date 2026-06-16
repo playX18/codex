@@ -253,6 +253,24 @@ impl AgentControl {
         Ok(thread_ids)
     }
 
+    pub(crate) async fn has_non_final_live_agents(&self) -> bool {
+        let Ok(state) = self.upgrade() else {
+            return false;
+        };
+        for metadata in self.state.live_agents() {
+            let Some(thread_id) = metadata.agent_id else {
+                continue;
+            };
+            let Ok(thread) = state.get_thread(thread_id).await else {
+                continue;
+            };
+            if !is_final(&thread.agent_status().await) {
+                return true;
+            }
+        }
+        false
+    }
+
     pub(crate) async fn get_agent_config_snapshot(
         &self,
         agent_id: ThreadId,
@@ -434,17 +452,7 @@ impl AgentControl {
             let Ok(state) = control.upgrade() else {
                 return;
             };
-            let child_thread = state.get_thread(child_thread_id).await.ok();
-            let child_uses_multi_agent_v2 = match child_thread.as_ref() {
-                Some(child_thread) => {
-                    child_thread.multi_agent_version() == Some(MultiAgentVersion::V2)
-                }
-                None => true,
-            };
-            if child_agent_path.is_some() && child_uses_multi_agent_v2 {
-                let Some(child_agent_path) = child_agent_path.clone() else {
-                    return;
-                };
+            if let Some(child_agent_path) = child_agent_path.clone() {
                 let Some(parent_agent_path) = child_agent_path
                     .as_str()
                     .rsplit_once('/')

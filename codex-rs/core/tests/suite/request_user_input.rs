@@ -67,6 +67,11 @@ fn call_output_content_and_success(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn request_user_input_round_trip_resolves_pending_in_compose_mode() -> anyhow::Result<()> {
+    request_user_input_round_trip_for_mode(ModeKind::Compose, /*auto_resolution_ms*/ None).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn request_user_input_round_trip_resolves_pending() -> anyhow::Result<()> {
     request_user_input_round_trip_for_mode(ModeKind::Plan, /*auto_resolution_ms*/ None).await
 }

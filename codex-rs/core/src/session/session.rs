@@ -8,6 +8,7 @@ use crate::shell_snapshot::ShellSnapshot;
 use crate::skills::SkillError;
 use crate::state::ActiveTurn;
 use codex_extension_api::ExtensionDataInit;
+use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::SessionId;
 use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use codex_protocol::config_types::ServiceTier;
@@ -228,6 +229,28 @@ impl SessionConfiguration {
         if let Some(collaboration_mode) = updates.collaboration_mode.clone() {
             next_configuration.collaboration_mode = collaboration_mode;
         }
+        if let Some(model_provider) = updates.model_provider.clone() {
+            let provider = updates
+                .model_provider_info
+                .clone()
+                .or_else(|| {
+                    next_configuration
+                        .original_config_do_not_use
+                        .model_providers
+                        .get(&model_provider)
+                        .cloned()
+                })
+                .unwrap_or_else(|| next_configuration.provider.clone());
+            next_configuration.original_config_do_not_use = Arc::new(Config {
+                model_provider_id: model_provider,
+                model_provider: provider,
+                ..(*next_configuration.original_config_do_not_use).clone()
+            });
+            next_configuration.provider = next_configuration
+                .original_config_do_not_use
+                .model_provider
+                .clone();
+        }
         if let Some(summary) = updates.reasoning_summary {
             next_configuration.model_reasoning_summary = Some(summary);
         }
@@ -421,6 +444,8 @@ pub(crate) struct SessionSettingsUpdate {
     pub(crate) permission_profile: Option<PermissionProfile>,
     pub(crate) active_permission_profile: Option<ActivePermissionProfile>,
     pub(crate) windows_sandbox_level: Option<WindowsSandboxLevel>,
+    pub(crate) model_provider: Option<String>,
+    pub(crate) model_provider_info: Option<ModelProviderInfo>,
     pub(crate) collaboration_mode: Option<CollaborationMode>,
     pub(crate) reasoning_summary: Option<ReasoningSummaryConfig>,
     pub(crate) service_tier: Option<Option<String>>,
@@ -1020,6 +1045,10 @@ impl Session {
                     Some(Arc::clone(&auth_manager)),
                     thread_id,
                     session_configuration.provider.clone(),
+                    Some(codex_model_provider::ProviderRuntimeContext::new(
+                        config.model_provider_id.clone(),
+                        config.codex_home.to_path_buf(),
+                    )),
                     session_configuration.session_source.clone(),
                     config.model_verbosity,
                     config.features.enabled(Feature::EnableRequestCompression),

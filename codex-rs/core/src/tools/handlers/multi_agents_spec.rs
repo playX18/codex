@@ -695,6 +695,7 @@ Do not spawn sub-agents unless the user explicitly asks for sub-agents, delegati
 
 ### After you delegate
 - Call wait_agent very sparingly. Only call wait_agent when you need the result immediately for the next critical-path step and you are blocked until it returns.
+- If the user explicitly asked you to use sub-agents, do not give a final answer immediately after spawn_agent succeeds. Continue useful non-overlapping work or call wait_agent for the spawned agent before finalizing.
 - Do not redo delegated subagent tasks yourself; focus on integrating results or tackling non-overlapping work.
 - While the subagent is running in the background, do meaningful non-overlapping work immediately.
 - Do not repeatedly wait by reflex.
@@ -726,6 +727,7 @@ The spawned agent will have the same tools as you and the ability to spawn its o
 {inherited_model_guidance}
 Only call this tool for a concrete, bounded subtask that can run independently alongside useful local work; otherwise continue locally.
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
+Do not give a final answer immediately after spawn_agent succeeds if the user explicitly asked you to use sub-agents; continue useful non-overlapping work or call wait_agent before finalizing.
 The new agent's canonical task name will be provided to it along with the message.
 
 Note that passing `fork_turns="none"` will not pass any surrounding context to the spawned subagent, which may cause the agent to lack the context it needs to complete its task, whereas `fork_turns="all"` will provide the subagent with all surrounding context."#

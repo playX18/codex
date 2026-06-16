@@ -481,6 +481,16 @@ pub(crate) async fn handle_output_item_done(
             )
             .await;
 
+            if matches!(
+                &item,
+                ResponseItem::Message {
+                    role,
+                    phase: Some(MessagePhase::Commentary),
+                    ..
+                } if role == "assistant"
+            ) {
+                output.needs_follow_up = true;
+            }
             output.last_agent_message = finalized_facts.and_then(|facts| facts.last_agent_message);
         }
         // The tool request should be answered directly (or was denied); push that response into the transcript.

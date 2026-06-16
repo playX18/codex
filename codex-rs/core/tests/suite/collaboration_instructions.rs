@@ -1,4 +1,5 @@
 use anyhow::Result;
+use codex_models_manager::collaboration_mode_presets::builtin_collaboration_mode_presets;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
@@ -786,6 +787,64 @@ async fn empty_collaboration_instructions_are_ignored() -> Result<()> {
     let dev_texts = developer_texts(&input);
     let collab_text = collab_xml("");
     assert_eq!(count_messages_containing(&dev_texts, &collab_text), 0);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compose_mode_instructions_are_injected() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let req = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+    )
+    .await;
+
+    let test = test_codex().build(&server).await?;
+
+    let compose_mask = builtin_collaboration_mode_presets()
+        .into_iter()
+        .find(|mask| mask.mode == Some(ModeKind::Compose))
+        .expect("compose preset should exist");
+
+    core_test_support::submit_thread_settings(
+        &test.codex,
+        codex_protocol::protocol::ThreadSettingsOverrides {
+            collaboration_mode: Some(CollaborationMode {
+                mode: ModeKind::Compose,
+                settings: Settings {
+                    model: test.session_configured.model.clone(),
+                    reasoning_effort: compose_mask.reasoning_effort.flatten(),
+                    developer_instructions: compose_mask.developer_instructions.flatten(),
+                },
+            }),
+            ..Default::default()
+        },
+    )
+    .await?;
+
+    test.codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await?;
+    wait_for_event(&test.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+
+    let input = req.single_request().input();
+    let dev_texts = developer_texts(&input);
+    assert_eq!(
+        count_messages_containing(&dev_texts, "Codex Compose Agent"),
+        1
+    );
 
     Ok(())
 }

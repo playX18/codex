@@ -2111,6 +2111,7 @@ fn websocket_provider_with_connect_timeout(
         websocket_connect_timeout_ms,
         requires_openai_auth: false,
         supports_websockets: true,
+        ..Default::default()
     }
 }
 
@@ -2184,6 +2185,7 @@ async fn websocket_harness_with_provider_options(
         /*auth_manager*/ None,
         thread_id,
         provider.clone(),
+        /*provider_runtime_context*/ None,
         SessionSource::Exec,
         config.model_verbosity,
         /*enable_request_compression*/ false,

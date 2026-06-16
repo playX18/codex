@@ -7,6 +7,7 @@ use crate::path_utils;
 use crate::shell_snapshot::ShellSnapshotFile;
 use codex_core_skills::HostLoadedSkills;
 use codex_file_system::FileSystemSandboxContext;
+use codex_model_provider::ProviderRuntimeContext;
 use codex_model_provider::SharedModelProvider;
 use codex_model_provider::create_model_provider;
 use codex_protocol::SessionId;
@@ -169,6 +170,7 @@ pub struct TurnContext {
     pub(crate) turn_timing_state: Arc<TurnTimingState>,
     pub(crate) server_model_warning_emitted: AtomicBool,
     pub(crate) model_verification_emitted: AtomicBool,
+    pub(crate) unfinished_plan_items: AtomicBool,
 }
 
 enum TurnMultiAgentRuntime {
@@ -341,6 +343,9 @@ impl TurnContext {
             ),
             model_verification_emitted: AtomicBool::new(
                 self.model_verification_emitted.load(Ordering::Relaxed),
+            ),
+            unfinished_plan_items: AtomicBool::new(
+                self.unfinished_plan_items.load(Ordering::Relaxed),
             ),
         }
     }
@@ -549,7 +554,14 @@ impl Session {
         );
         let session_source = session_configuration.session_source.clone();
         let auth_manager_for_context = auth_manager.clone();
-        let provider_for_context = create_model_provider(provider, auth_manager);
+        let provider_for_context = create_model_provider(
+            provider,
+            auth_manager,
+            Some(ProviderRuntimeContext::new(
+                per_turn_config.model_provider_id.clone(),
+                per_turn_config.codex_home.to_path_buf(),
+            )),
+        );
         let session_telemetry_for_context = session_telemetry;
         let available_models = models_manager.try_list_models().unwrap_or_default();
         let unified_exec_shell_mode = UnifiedExecShellMode::for_session(
@@ -641,6 +653,7 @@ impl Session {
             turn_timing_state: Arc::new(TurnTimingState::default()),
             server_model_warning_emitted: AtomicBool::new(false),
             model_verification_emitted: AtomicBool::new(false),
+            unfinished_plan_items: AtomicBool::new(false),
         }
     }
 

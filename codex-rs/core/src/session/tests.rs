@@ -431,6 +431,7 @@ fn test_model_client_session() -> crate::client::ModelClientSession {
         /*auth_manager*/ None,
         thread_id,
         ModelProviderInfo::create_openai_provider(/* base_url */ /*base_url*/ None),
+        /*provider_runtime_context*/ None,
         codex_protocol::protocol::SessionSource::Exec,
         /*model_verbosity*/ None,
         /*enable_request_compression*/ false,
@@ -3915,6 +3916,34 @@ async fn session_settings_legacy_fast_service_tier_update_uses_priority_request_
     );
 }
 
+#[tokio::test]
+async fn session_settings_model_provider_update_replaces_runtime_provider() {
+    let session_configuration = make_session_configuration_for_tests().await;
+    let provider = ModelProviderInfo {
+        name: "Xiaomi Token Plan".to_string(),
+        base_url: Some("https://example.invalid/v1".to_string()),
+        env_key: Some("XIAOMI_API_KEY".to_string()),
+        ..Default::default()
+    };
+
+    let updated = session_configuration
+        .apply(&SessionSettingsUpdate {
+            model_provider: Some("xiaomi-token-plan-sgp".to_string()),
+            model_provider_info: Some(provider.clone()),
+            ..Default::default()
+        })
+        .expect("model provider update should apply");
+
+    assert_eq!(updated.provider, provider);
+    assert_eq!(
+        updated
+            .original_config_do_not_use
+            .model_provider_id
+            .as_str(),
+        "xiaomi-token-plan-sgp"
+    );
+}
+
 pub(crate) async fn make_session_configuration_for_tests() -> SessionConfiguration {
     let codex_home = tempfile::tempdir().expect("create temp dir");
     let config = build_test_config(codex_home.path()).await;
@@ -5028,6 +5057,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
             Some(auth_manager.clone()),
             thread_id,
             session_configuration.provider.clone(),
+            /*provider_runtime_context*/ None,
             session_configuration.session_source.clone(),
             config.model_verbosity,
             config.features.enabled(Feature::EnableRequestCompression),
@@ -7072,6 +7102,7 @@ where
             Some(Arc::clone(&auth_manager)),
             thread_id,
             session_configuration.provider.clone(),
+            /*provider_runtime_context*/ None,
             session_configuration.session_source.clone(),
             config.model_verbosity,
             config.features.enabled(Feature::EnableRequestCompression),
@@ -7823,6 +7854,7 @@ fn emit_thread_start_skill_metrics_records_enabled_kept_and_truncated_values() {
         SkillRenderSideEffects::ThreadStart {
             session_telemetry: &session_telemetry,
         },
+        false,
     )
     .expect("skills should render");
 
@@ -7889,6 +7921,7 @@ fn emit_thread_start_skill_metrics_records_description_truncated_chars_without_o
         SkillRenderSideEffects::ThreadStart {
             session_telemetry: &session_telemetry,
         },
+        false,
     )
     .expect("skills should render");
 
