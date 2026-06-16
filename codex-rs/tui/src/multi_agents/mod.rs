@@ -30,6 +30,8 @@ const COLLAB_PROMPT_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_ERROR_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES: usize = 240;
 
+mod render;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AgentPickerThreadEntry {
     /// Human-friendly nickname shown in picker rows and footer labels.
@@ -72,13 +74,10 @@ pub(crate) struct SpawnRequestSummary {
     pub(crate) reasoning_effort: ReasoningEffortConfig,
 }
 
-pub(crate) fn agent_picker_status_dot_spans(is_closed: bool) -> Vec<Span<'static>> {
-    let dot = if is_closed {
-        "•".into()
-    } else {
-        "•".green()
-    };
-    vec![dot, " ".into()]
+pub(crate) fn agent_picker_status_dot_spans_for_entry(
+    entry: &AgentPickerThreadEntry,
+) -> Vec<Span<'static>> {
+    render::agent_picker_status_dot_spans(entry.is_running, entry.is_closed)
 }
 
 pub(crate) fn format_agent_picker_item_name(
@@ -379,13 +378,16 @@ fn waiting_begin(
         .collect::<Vec<_>>();
 
     let title = match receiver_agents.as_slice() {
-        [(thread_id, metadata)] => title_with_agent(
-            "Waiting for",
-            agent_label(*thread_id, metadata),
-            /*spawn_request*/ None,
-        ),
+        [(thread_id, metadata)] => {
+            let mut spans = vec![Span::from("Waiting for ").bold()];
+            spans.extend(agent_label_spans(agent_label(*thread_id, metadata)));
+            title_spans_line_with_activity(spans, /*is_active*/ true)
+        }
         [] => title_text("Waiting for agents"),
-        _ => title_text(format!("Waiting for {} agents", receiver_agents.len())),
+        _ => title_spans_line_with_activity(
+            vec![Span::from(format!("Waiting for {} agents", receiver_agents.len())).bold()],
+            /*is_active*/ true,
+        ),
     };
 
     let details = if receiver_agents.len() > 1 {
@@ -476,9 +478,13 @@ fn title_with_agent(
     title_spans_line(spans)
 }
 
-fn title_spans_line(mut spans: Vec<Span<'static>>) -> Line<'static> {
+fn title_spans_line(spans: Vec<Span<'static>>) -> Line<'static> {
+    title_spans_line_with_activity(spans, /*is_active*/ false)
+}
+
+fn title_spans_line_with_activity(mut spans: Vec<Span<'static>>, is_active: bool) -> Line<'static> {
     let mut title = Vec::with_capacity(spans.len() + 1);
-    title.push(Span::from("• ").dim());
+    title.push(render::collab_title_bullet(is_active));
     title.append(&mut spans);
     title.into()
 }
@@ -517,7 +523,7 @@ fn agent_label_spans(agent: AgentLabel<'_>) -> Vec<Span<'static>> {
 
     if let Some(role) = role {
         spans.push(Span::from(" ").dim());
-        spans.push(Span::from(format!("[{role}]")));
+        spans.push(render::agent_role_badge(role));
     }
 
     spans
@@ -622,9 +628,7 @@ fn status_summary_spans(status: &CollabAgentState) -> Vec<Span<'static>> {
     match status.status {
         CollabAgentStatus::PendingInit => vec![Span::from("Pending init").cyan()],
         CollabAgentStatus::Running => vec![Span::from("Running").cyan().bold()],
-        // Allow `.yellow()`
-        #[allow(clippy::disallowed_methods)]
-        CollabAgentStatus::Interrupted => vec![Span::from("Interrupted").yellow()],
+        CollabAgentStatus::Interrupted => vec![Span::from("Interrupted").dim()],
         CollabAgentStatus::Completed => {
             let mut spans = vec![Span::from("Completed").green()];
             if let Some(message) = status.message.as_ref() {
@@ -876,8 +880,7 @@ mod tests {
         assert_eq!(title.spans[2].style.fg, Some(Color::Cyan));
         assert!(title.spans[2].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(title.spans[4].content.as_ref(), "[explorer]");
-        assert_eq!(title.spans[4].style.fg, None);
-        assert!(!title.spans[4].style.add_modifier.contains(Modifier::DIM));
+        assert_eq!(title.spans[4].style.fg, Some(Color::Magenta));
         assert_eq!(title.spans[6].content.as_ref(), "(gpt-5 high)");
         assert_eq!(title.spans[6].style.fg, Some(Color::Magenta));
     }

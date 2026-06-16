@@ -7,6 +7,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
+use ratatui::widgets::Widget;
 use ratatui::widgets::WidgetRef;
 use ratatui::widgets::Wrap;
 
@@ -14,17 +15,14 @@ use crate::key_hint::KeyBindingListExt;
 use crate::onboarding::keys;
 use crate::onboarding::onboarding_screen::KeyboardHandler;
 use crate::onboarding::onboarding_screen::StepStateProvider;
-use crate::render::Insets;
-use crate::render::renderable::ColumnRenderable;
-use crate::render::renderable::Renderable;
-use crate::render::renderable::RenderableExt as _;
-use crate::selection_list::selection_option_row;
+use crate::render::step_card::StepCardOption;
+use crate::render::step_card::render_step_card_content;
+use crate::render::step_card::render_step_header;
 
 use super::onboarding_screen::StepState;
 pub(crate) struct TrustDirectoryWidget {
     pub cwd: PathBuf,
     pub trust_target: PathBuf,
-    pub show_windows_create_sandbox_hint: bool,
     pub should_quit: bool,
     pub selection: Option<TrustDirectorySelection>,
     pub highlighted: TrustDirectorySelection,
@@ -39,89 +37,78 @@ pub enum TrustDirectorySelection {
 
 impl WidgetRef for &TrustDirectoryWidget {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
-        let mut column = ColumnRenderable::new();
+        let highlighted_idx = match self.highlighted {
+            TrustDirectorySelection::Trust => 0,
+            TrustDirectorySelection::Quit => 1,
+        };
 
-        column.push(Line::from(vec![
-            "> ".into(),
-            "You are in ".bold(),
-            self.cwd.to_string_lossy().to_string().into(),
-        ]));
-        column.push("");
+        let cwd = self.cwd.to_string_lossy().to_string();
+        let mut body = vec![Line::from(vec![
+            "You are in ".into(),
+            cwd.cyan(),
+            " with ".into(),
+            "Codex".magenta(),
+        ])];
 
         if self.cwd != self.trust_target {
-            #[allow(clippy::disallowed_methods)]
-            let git_root_warning = Paragraph::new(format!(
-                "Note: You’re in a subdirectory of a Git project. Trusting will apply to the repository root: {}",
-                self.trust_target.display()
-            ))
-            .yellow();
-            column.push(
-                git_root_warning
-                    .wrap(Wrap { trim: true })
-                    .inset(Insets::tlbr(
-                        /*top*/ 0, /*left*/ 2, /*bottom*/ 0, /*right*/ 0,
-                    )),
+            body.push("".into());
+            body.push(
+                Line::from(vec![
+                    "Note: You're in a subdirectory of a Git project. Trusting applies to the repository root: "
+                        .dim(),
+                    self.trust_target.display().to_string().cyan(),
+                ]),
             );
-            column.push("");
         }
 
-        column.push(
-            Paragraph::new(
-                "Do you trust the contents of this directory? Working with untrusted \
-                 contents comes with higher risk of prompt injection. Trusting the \
-                 directory allows project-local config, hooks, and exec policies to load."
-                    .to_string(),
-            )
-            .wrap(Wrap { trim: true })
-            .inset(Insets::tlbr(
-                /*top*/ 0, /*left*/ 2, /*bottom*/ 0, /*right*/ 0,
-            )),
+        body.push("".into());
+        body.push(
+            "Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt injection."
+                .dim()
+                .into(),
         );
-        column.push("");
+        body.push(
+            "Trusting the directory allows project-local config, hooks, and exec policies to load."
+                .dim()
+                .into(),
+        );
+        body.push("".into());
+        body.push("Project-local config loads after trust.".dim().into());
 
-        let options: Vec<(&str, TrustDirectorySelection)> = vec![
-            ("Yes, continue", TrustDirectorySelection::Trust),
-            ("No, quit", TrustDirectorySelection::Quit),
+        let options = [
+            StepCardOption {
+                label: "Yes, continue",
+                description: None,
+            },
+            StepCardOption {
+                label: "No, quit",
+                description: None,
+            },
         ];
 
-        for (idx, (text, selection)) in options.iter().enumerate() {
-            column.push(selection_option_row(
-                idx,
-                text.to_string(),
-                self.highlighted == *selection,
-            ));
-        }
-
-        column.push("");
-
-        if let Some(error) = &self.error {
-            column.push(
-                Paragraph::new(error.to_string())
-                    .red()
-                    .wrap(Wrap { trim: true })
-                    .inset(Insets::tlbr(
-                        /*top*/ 0, /*left*/ 2, /*bottom*/ 0, /*right*/ 0,
-                    )),
-            );
-            column.push("");
-        }
-
-        column.push(
-            Line::from(vec![
-                "Press ".dim(),
-                keys::CONFIRM[0].into(),
-                if self.show_windows_create_sandbox_hint {
-                    " to continue and create a sandbox...".dim()
-                } else {
-                    " to continue".dim()
-                },
-            ])
-            .inset(Insets::tlbr(
-                /*top*/ 0, /*left*/ 2, /*bottom*/ 0, /*right*/ 0,
-            )),
+        let header = render_step_header("Trust this directory", None);
+        render_step_card_content(
+            area,
+            buf,
+            "Trust",
+            header,
+            body,
+            Some((&options, highlighted_idx)),
         );
 
-        column.render(area, buf);
+        if let Some(error) = &self.error {
+            let error_area = Rect {
+                y: area.y.saturating_add(area.height.saturating_sub(3)),
+                height: 2,
+                ..area
+            };
+            if !error_area.is_empty() {
+                Paragraph::new(error.clone())
+                    .red()
+                    .wrap(Wrap { trim: true })
+                    .render(error_area, buf);
+            }
+        }
     }
 }
 
@@ -195,7 +182,6 @@ mod tests {
         TrustDirectoryWidget {
             cwd: PathBuf::from("/workspace/project"),
             trust_target: PathBuf::from("/workspace/project"),
-            show_windows_create_sandbox_hint: false,
             should_quit: false,
             selection: None,
             highlighted: TrustDirectorySelection::Trust,
@@ -208,7 +194,6 @@ mod tests {
         let mut widget = TrustDirectoryWidget {
             cwd: PathBuf::from("."),
             trust_target: PathBuf::from("."),
-            show_windows_create_sandbox_hint: false,
             should_quit: false,
             selection: None,
             highlighted: TrustDirectorySelection::Quit,

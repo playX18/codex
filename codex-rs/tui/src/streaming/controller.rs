@@ -550,6 +550,11 @@ impl StreamController {
         self.core.set_render_mode(render_mode);
     }
 
+    #[inline]
+    pub(crate) fn streamed_source(&self) -> &str {
+        &self.core.raw_source
+    }
+
     fn emit(&mut self, lines: Vec<HyperlinkLine>) -> Option<Box<dyn HistoryCell>> {
         if lines.is_empty() {
             return None;
@@ -673,6 +678,11 @@ impl PlanStreamController {
 
     pub(crate) fn set_render_mode(&mut self, render_mode: HistoryRenderMode) {
         self.core.set_render_mode(render_mode);
+    }
+
+    #[inline]
+    pub(crate) fn streamed_source(&self) -> &str {
+        &self.core.raw_source
     }
 
     fn emit(

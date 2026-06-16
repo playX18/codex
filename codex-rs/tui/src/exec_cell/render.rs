@@ -261,7 +261,7 @@ impl ExecCell {
 
     fn exploring_display_lines(&self, width: u16) -> Vec<Line<'static>> {
         let mut out: Vec<Line<'static>> = Vec::new();
-        out.push(Line::from(vec![
+        let mut header_spans = vec![
             if self.is_active() {
                 activity_marker(self.active_start_time(), self.animations_enabled())
             } else {
@@ -273,7 +273,16 @@ impl ExecCell {
             } else {
                 "Explored".bold()
             },
-        ]));
+        ];
+        if self.calls.len() > 1 {
+            let completed = self
+                .calls
+                .iter()
+                .filter(|call| call.output.is_some())
+                .count();
+            header_spans.push(format!(" step {completed}/{}", self.calls.len()).dim());
+        }
+        out.push(Line::from(header_spans));
 
         let mut calls = self.calls.clone();
         let mut out_indented = Vec::new();

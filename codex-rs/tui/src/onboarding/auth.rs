@@ -27,7 +27,6 @@ use ratatui::layout::Layout;
 use ratatui::layout::Rect;
 use ratatui::prelude::Widget;
 use ratatui::style::Color;
-use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
@@ -52,6 +51,9 @@ use crate::motion::shimmer_text;
 use crate::onboarding::keys;
 use crate::onboarding::onboarding_screen::KeyboardHandler;
 use crate::onboarding::onboarding_screen::StepStateProvider;
+use crate::render::step_card::StepCardOption;
+use crate::render::step_card::render_step_card_content;
+use crate::render::step_card::render_step_header;
 use crate::tui::FrameRequester;
 
 /// Marks buffer cells that have cyan+underlined style as an OSC 8 hyperlink.
@@ -387,46 +389,11 @@ impl AuthModeWidget {
     }
 
     fn render_pick_mode(&self, area: Rect, buf: &mut Buffer) {
-        let mut lines: Vec<Line> = vec![
-            Line::from(vec![
-                "  ".into(),
-                "Sign in with ChatGPT to use Codex as part of your paid plan".into(),
-            ]),
-            Line::from(vec![
-                "  ".into(),
-                "or connect an API key for usage-based billing".into(),
-            ]),
-            "".into(),
-        ];
-
-        let create_mode_item = |idx: usize,
-                                selected_mode: SignInOption,
-                                text: &str,
-                                description: &str|
-         -> Vec<Line<'static>> {
-            let is_selected = self.highlighted_mode == selected_mode;
-            let caret = if is_selected { ">" } else { " " };
-
-            let line1 = if is_selected {
-                Line::from(vec![
-                    format!("{caret} {index}. ", index = idx + 1).cyan().dim(),
-                    text.to_string().cyan(),
-                ])
-            } else {
-                format!("  {index}. {text}", index = idx + 1).into()
-            };
-
-            let line2 = if is_selected {
-                Line::from(format!("     {description}"))
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::DIM)
-            } else {
-                Line::from(format!("     {description}"))
-                    .style(Style::default().add_modifier(Modifier::DIM))
-            };
-
-            vec![line1, line2]
-        };
+        let displayed_options = self.displayed_sign_in_options();
+        let highlighted_idx = displayed_options
+            .iter()
+            .position(|option| *option == self.highlighted_mode)
+            .unwrap_or(0);
 
         let chatgpt_description = if !self.is_chatgpt_login_allowed() {
             "ChatGPT login is disabled"
@@ -435,57 +402,54 @@ impl AuthModeWidget {
         };
         let device_code_description = "Sign in from another device with a one-time code";
 
-        for (idx, option) in self.displayed_sign_in_options().into_iter().enumerate() {
-            match option {
-                SignInOption::ChatGpt => {
-                    lines.extend(create_mode_item(
-                        idx,
-                        option,
-                        "Sign in with ChatGPT",
-                        chatgpt_description,
-                    ));
-                }
+        let mut step_options = Vec::new();
+        for option in &displayed_options {
+            let (label, description) = match option {
+                SignInOption::ChatGpt => ("Sign in with ChatGPT", Some(chatgpt_description)),
                 SignInOption::DeviceCode => {
-                    lines.extend(create_mode_item(
-                        idx,
-                        option,
-                        "Sign in with Device Code",
-                        device_code_description,
-                    ));
+                    ("Sign in with Device Code", Some(device_code_description))
                 }
-                SignInOption::ApiKey => {
-                    lines.extend(create_mode_item(
-                        idx,
-                        option,
-                        "Provide your own API key",
-                        "Pay for what you use",
-                    ));
-                }
-            }
-            lines.push("".into());
+                SignInOption::ApiKey => ("Provide your own API key", Some("Pay for what you use")),
+            };
+            step_options.push(StepCardOption { label, description });
         }
 
+        let mut body = vec![
+            "Sign in with ChatGPT to use Codex as part of your paid plan"
+                .dim()
+                .into(),
+            "or connect a model provider with an API key for usage-based billing"
+                .dim()
+                .into(),
+        ];
         if !self.is_api_login_allowed() {
-            lines.push(
-                "  API key login is disabled by this workspace. Sign in with ChatGPT to continue."
+            body.push("".into());
+            body.push(
+                "API key login is disabled by this workspace. Sign in with ChatGPT to continue."
                     .dim()
                     .into(),
             );
-            lines.push("".into());
         }
-        lines.push(Line::from(vec![
-            "  Press ".dim(),
+        body.push("".into());
+        body.push(Line::from(vec![
+            "Press ".dim(),
             self.confirm_binding().into(),
             " to continue".dim(),
         ]));
         if let Some(err) = self.error_message() {
-            lines.push("".into());
-            lines.push(err.red().into());
+            body.push("".into());
+            body.push(err.red().into());
         }
 
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .render(area, buf);
+        let header = render_step_header("Sign in to Codex", Some("Choose how to authenticate"));
+        render_step_card_content(
+            area,
+            buf,
+            "Sign in",
+            header,
+            body,
+            Some((step_options.as_slice(), highlighted_idx)),
+        );
     }
 
     fn render_continue_in_browser(&self, area: Rect, buf: &mut Buffer) {
@@ -544,10 +508,26 @@ impl AuthModeWidget {
     }
 
     fn render_chatgpt_success_message(&self, area: Rect, buf: &mut Buffer) {
+        if self.animations_enabled && !self.animations_suppressed.get() {
+            self.request_frame
+                .schedule_frame_in(std::time::Duration::from_millis(100));
+        }
+        let motion_mode = if self.animations_enabled && !self.animations_suppressed.get() {
+            MotionMode::Animated
+        } else {
+            MotionMode::Reduced
+        };
+        let signed_in_line = if matches!(motion_mode, MotionMode::Animated) {
+            Line::from(shimmer_text(
+                "Signed in with your ChatGPT account",
+                motion_mode,
+            ))
+        } else {
+            "Signed in with your ChatGPT account".green().into()
+        };
+
         let lines = vec![
-            "✓ Signed in with your ChatGPT account"
-                .fg(Color::Green)
-                .into(),
+            signed_in_line,
             "".into(),
             "  Before you start:".into(),
             "".into(),
@@ -1266,7 +1246,7 @@ mod tests {
             let cell = &mut buf[(i as u16, 0)];
             cell.set_symbol(&ch.to_string());
             cell.fg = Color::Cyan;
-            cell.modifier = Modifier::UNDERLINED;
+            cell.modifier = ratatui::style::Modifier::UNDERLINED;
         }
         // Leave a plain cell that should NOT be marked.
         buf[(7, 0)].set_symbol("X");
@@ -1290,7 +1270,7 @@ mod tests {
         let cell = &mut buf[(0, 0)];
         cell.set_symbol("a");
         cell.fg = Color::Cyan;
-        cell.modifier = Modifier::UNDERLINED;
+        cell.modifier = ratatui::style::Modifier::UNDERLINED;
 
         // URL contains ESC and BEL that could break the OSC 8 sequence.
         let malicious_url = "https://evil.com/\x1B]8;;\x07injected";

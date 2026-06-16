@@ -39,6 +39,17 @@ impl HistoryCell for FinalMessageSeparator {
         }
 
         if label_parts.is_empty() {
+            if width >= 40 {
+                let label = "─ conversation ─";
+                let (label, _suffix, label_width) = take_prefix_by_width(label, width as usize);
+                return vec![
+                    Line::from_iter([
+                        label,
+                        "─".repeat((width as usize).saturating_sub(label_width)),
+                    ])
+                    .dim(),
+                ];
+            }
             return vec![Line::from_iter(["─".repeat(width as usize).dim()])];
         }
 

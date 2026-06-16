@@ -1,5 +1,9 @@
 //! Session headers, onboarding guidance, and transcript cards.
 
+use std::time::Instant;
+
+use rand::Rng;
+
 use super::*;
 
 pub(crate) const SESSION_HEADER_MAX_INNER_WIDTH: usize = 56; // Just an eyeballed value
@@ -79,12 +83,12 @@ pub(crate) fn padded_emoji(emoji: &str) -> String {
 }
 
 #[derive(Debug)]
-struct TooltipHistoryCell {
+struct PinnedTooltipHistoryCell {
     tip: String,
     cwd: PathBuf,
 }
 
-impl TooltipHistoryCell {
+impl PinnedTooltipHistoryCell {
     fn new(tip: String, cwd: &Path) -> Self {
         Self {
             tip,
@@ -93,27 +97,106 @@ impl TooltipHistoryCell {
     }
 }
 
-impl HistoryCell for TooltipHistoryCell {
+impl HistoryCell for PinnedTooltipHistoryCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
-        let indent = "  ";
-        let indent_width = UnicodeWidthStr::width(indent);
-        let wrap_width = usize::from(width.max(1))
-            .saturating_sub(indent_width)
-            .max(1);
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        append_markdown(
-            &format!("**Tip:** {}", self.tip),
-            Some(wrap_width),
-            Some(self.cwd.as_path()),
-            &mut lines,
-        );
-
-        prefix_lines(lines, indent.into(), indent.into())
+        render_tooltip_lines(&self.tip, width, &self.cwd, /*highlight_bold*/ false)
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
         vec![Line::from(format!("Tip: {}", self.tip))]
     }
+}
+
+#[derive(Debug)]
+struct RotatingTooltipHistoryCell {
+    rotation_seed: u64,
+    session_started: Instant,
+    cwd: PathBuf,
+}
+
+impl RotatingTooltipHistoryCell {
+    fn new(cwd: &Path, rotation_seed: u64) -> Self {
+        Self {
+            rotation_seed,
+            session_started: Instant::now(),
+            cwd: cwd.to_path_buf(),
+        }
+    }
+
+    fn current_tip_body(&self) -> Option<String> {
+        let rotation =
+            self.session_started.elapsed().as_secs() / tooltips::TIP_ROTATION_INTERVAL.as_secs();
+        tooltips::tip_at_rotation(rotation, self.rotation_seed).map(|tip| tip.body.clone())
+    }
+}
+
+impl HistoryCell for RotatingTooltipHistoryCell {
+    fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let Some(tip) = self.current_tip_body() else {
+            return Vec::new();
+        };
+        render_tooltip_lines(&tip, width, &self.cwd, /*highlight_bold*/ true)
+    }
+
+    fn raw_lines(&self) -> Vec<Line<'static>> {
+        self.current_tip_body()
+            .map(|tip| vec![Line::from(format!("Tip: {tip}"))])
+            .unwrap_or_default()
+    }
+
+    fn transcript_animation_tick(&self) -> Option<u64> {
+        Some(self.session_started.elapsed().as_secs() / tooltips::TIP_ROTATION_INTERVAL.as_secs())
+    }
+}
+
+fn render_tooltip_lines(
+    tip: &str,
+    width: u16,
+    cwd: &Path,
+    highlight_bold: bool,
+) -> Vec<Line<'static>> {
+    let indent = "  ";
+    let indent_width = UnicodeWidthStr::width(indent);
+    let wrap_width = usize::from(width.max(1))
+        .saturating_sub(indent_width)
+        .max(1);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if highlight_bold {
+        let mut spans = vec!["**Tip:** ".to_string().dim()];
+        spans.extend(tip_body_spans(tip));
+        lines.push(Line::from(spans));
+    } else {
+        append_markdown(
+            &format!("**Tip:** {tip}"),
+            Some(wrap_width),
+            Some(cwd),
+            &mut lines,
+        );
+    }
+
+    prefix_lines(lines, indent.into(), indent.into())
+}
+
+fn tip_body_spans(body: &str) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut remaining = body;
+    while let Some(start) = remaining.find("**") {
+        if start > 0 {
+            spans.push(remaining[..start].to_string().dim());
+        }
+        remaining = &remaining[start + 2..];
+        if let Some(end) = remaining.find("**") {
+            spans.push(remaining[..end].to_string().cyan());
+            remaining = &remaining[end + 2..];
+        } else {
+            spans.push(remaining.to_string().into());
+            return spans;
+        }
+    }
+    if !remaining.is_empty() {
+        spans.push(remaining.to_string().dim());
+    }
+    spans
 }
 
 #[derive(Debug)]
@@ -196,12 +279,22 @@ pub(crate) fn new_session_info(
 
         parts.push(Box::new(PlainHistoryCell { lines: help_lines }));
     } else {
-        if config.show_tooltips
-            && let Some(tooltips) = tooltip_override
-                .or_else(|| tooltips::get_tooltip(auth_plan, show_fast_status))
-                .map(|tip| TooltipHistoryCell::new(tip, &config.cwd))
-        {
-            parts.push(Box::new(tooltips));
+        if config.show_tooltips {
+            let mode = tooltip_override
+                .map(tooltips::TooltipMode::Pinned)
+                .or_else(|| tooltips::resolve_tooltip_mode(auth_plan, show_fast_status));
+            if let Some(mode) = mode {
+                let rotation_seed = rand::rng().random();
+                let cell: Box<dyn HistoryCell> = match mode {
+                    tooltips::TooltipMode::Pinned(tip) => {
+                        Box::new(PinnedTooltipHistoryCell::new(tip, &config.cwd))
+                    }
+                    tooltips::TooltipMode::Rotating => {
+                        Box::new(RotatingTooltipHistoryCell::new(&config.cwd, rotation_seed))
+                    }
+                };
+                parts.push(cell);
+            }
         }
         if requested_model != session.model.as_str() {
             let lines = vec![

@@ -23,6 +23,7 @@ pub(super) struct FooterState {
     pub(super) context_window_percent: Option<i64>,
     pub(super) context_window_used_tokens: Option<i64>,
     pub(super) collaboration_mode_indicator: Option<CollaborationModeIndicator>,
+    pub(super) third_party_provider_label: Option<String>,
     pub(super) goal_status_indicator: Option<GoalStatusIndicator>,
     pub(super) ide_context_active: bool,
     pub(super) status_line_value: Option<Line<'static>>,

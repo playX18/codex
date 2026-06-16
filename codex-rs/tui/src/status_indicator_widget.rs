@@ -23,8 +23,8 @@ use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
 use crate::motion::MotionMode;
-use crate::motion::ReducedMotionIndicator;
-use crate::motion::activity_indicator;
+use crate::motion::ScannerStyle;
+use crate::motion::scanner_spans;
 use crate::motion::shimmer_text;
 use crate::render::renderable::Renderable;
 use crate::text_formatting::capitalize_first;
@@ -253,13 +253,17 @@ impl Renderable for StatusIndicatorWidget {
         let motion_mode = MotionMode::from_animations_enabled(self.animations_enabled);
 
         let mut spans = Vec::with_capacity(5);
-        if let Some(indicator) = activity_indicator(
-            Some(self.last_resume_at),
-            motion_mode,
-            ReducedMotionIndicator::Hidden,
-        ) {
-            spans.push(indicator);
-            spans.push(" ".into());
+        if self.animations_enabled {
+            let scanner = scanner_spans(
+                Some(self.last_resume_at),
+                motion_mode,
+                /*width*/ 5,
+                ScannerStyle::Diamonds,
+            );
+            if !scanner.is_empty() {
+                spans.extend(scanner);
+                spans.push(" ".into());
+            }
         }
         spans.extend(shimmer_text(&self.header, motion_mode));
         if !spans.is_empty() {

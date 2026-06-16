@@ -1,5 +1,6 @@
 ---
 source: tui/src/resume_picker.rs
+assertion_line: 5079
 expression: terminal.backend().to_string()
 ---
 ↑ more

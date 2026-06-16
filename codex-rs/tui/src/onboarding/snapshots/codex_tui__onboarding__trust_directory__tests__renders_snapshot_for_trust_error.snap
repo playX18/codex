@@ -2,18 +2,21 @@
 source: tui/src/onboarding/trust_directory.rs
 expression: terminal.backend()
 ---
-> You are in /workspace/project
-
-  Do you trust the contents of this directory? Working with untrusted
-  contents comes with higher risk of prompt injection. Trusting the
-  directory allows project-local config, hooks, and exec policies to
-  load.
-
-› 1. Yes, continue                                                    
-  2. No, quit
-
-  Failed to set trust for /workspace/project: config/batchWrite failed
-  in TUI: Invalid configuration: features.fast_mode=true is not       
-  supported; allowed set [fast_mode=false]                            
-
-  Press enter to continue
+╭Trust───────────────────────────────────────────────────────────────╮
+│ Trust this directory                                               │
+│                                                                    │
+│ You are in /workspace/project with Codex                           │
+│                                                                    │
+│ Do you trust the contents of this directory? Working with          │
+│ untrusted contents comes with higher risk of prompt injection.     │
+│ Trusting the directory allows project-local config, hooks, and     │
+│ exec policies to load.                                             │
+│                                                                    │
+│ Project-local config loads after trust.                            │
+│                                                                    │
+│ › 1. Yes, continue                                                 │
+│                                                                    │
+│   2. No, quit                                                      │
+Failed to set trust for /workspace/project: config/batchWrite failed │
+in TUI: Invalid configuration: features.fast_mode=true is not        │
+╰────────────────────────────────────────────────────────────────────╯

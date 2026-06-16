@@ -1,9 +1,10 @@
 ---
 source: tui/src/app/thread_goal_actions.rs
+assertion_line: 418
 expression: terminal.backend()
 ---
 
 
 ■ Goals need a saved session. This session is temporary.
-Run `codexium` to start a saved session, or `codexium resume` / `/resume` to
-reopen one.
+Run `codexium` to start a saved session, or `codexium resume` / `/
+resume` to reopen one.

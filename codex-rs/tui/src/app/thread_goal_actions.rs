@@ -17,7 +17,7 @@ use codex_protocol::ThreadId;
 
 const EPHEMERAL_THREAD_GOAL_ERROR_MESSAGE: &str = concat!(
     "Goals need a saved session. This session is temporary.\n",
-    "Run `codex` to start a saved session, or `codex resume` / `/resume` to reopen one.",
+    "Run `codexium` to start a saved session, or `codexium resume` / `/resume` to reopen one.",
 );
 
 impl App {

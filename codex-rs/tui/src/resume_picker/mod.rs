@@ -78,6 +78,8 @@ const FOOTER_HINT_GAP: usize = 3;
 const PICKER_CHROME_HEIGHT: u16 = 8;
 const PICKER_LIST_HORIZONTAL_INSET: u16 = 4;
 
+mod render;
+
 #[derive(Debug, Clone)]
 pub struct SessionTarget {
     pub path: Option<PathBuf>,
@@ -1884,7 +1886,7 @@ fn draw_picker(tui: &mut Tui, state: &PickerState) -> std::io::Result<()> {
         );
         render_list(frame, list, state);
         if state.is_transcript_loading() {
-            render_transcript_loading_overlay(frame, list);
+            render_transcript_loading_overlay(frame, list, /*animations_enabled*/ true);
         }
 
         render_picker_footer(frame, footer, state, list.height);
@@ -2035,7 +2037,7 @@ fn render_picker_footer(
     render_picker_footer_separator(
         frame,
         separator,
-        picker_footer_progress_label(state, list_height, area.width),
+        picker_footer_progress_line(state, list_height, area.width),
     );
 
     let lines = footer_hint_lines(state, area.width);
@@ -2051,7 +2053,7 @@ fn render_picker_footer(
 fn render_picker_footer_separator(
     frame: &mut crate::custom_terminal::Frame,
     area: Rect,
-    progress_label: String,
+    progress_line: Line<'static>,
 ) {
     if area.width == 0 {
         return;
@@ -2060,7 +2062,7 @@ fn render_picker_footer_separator(
     let separator = "─".repeat(area.width as usize);
     frame.render_widget_ref(Line::from(separator.dim()), area);
 
-    let progress_width = UnicodeWidthStr::width(progress_label.as_str()) as u16;
+    let progress_width = progress_line.width() as u16;
     if progress_width < area.width {
         let percent_area = Rect::new(
             area.x + area.width - progress_width - 1,
@@ -2068,31 +2070,40 @@ fn render_picker_footer_separator(
             progress_width,
             1,
         );
-        frame.render_widget_ref(Line::from(progress_label.dim()), percent_area);
+        frame.render_widget_ref(progress_line, percent_area);
     }
 }
 
-fn picker_footer_progress_label(state: &PickerState, list_height: u16, width: u16) -> String {
+fn picker_footer_progress_line(state: &PickerState, list_height: u16, width: u16) -> Line<'static> {
     let position = if state.filtered_rows.is_empty() {
         0
     } else {
         state.selected.saturating_add(1)
     };
-    let total = if state.pagination.loading.is_pending() {
+    let total = state.filtered_rows.len();
+    let percent = picker_footer_percent(state, list_height);
+    let total_display = if state.pagination.loading.is_pending() {
         format!("{}…", state.filtered_rows.len())
     } else {
         state.filtered_rows.len().to_string()
     };
-    let percent = picker_footer_percent(state, list_height);
-    let labels = [
-        format!(" {position} / {total} · {percent}% "),
-        format!(" {position}/{total} · {percent}% "),
-        format!(" {percent}% "),
-    ];
-    labels
-        .into_iter()
-        .find(|label| UnicodeWidthStr::width(label.as_str()) < width as usize)
-        .unwrap_or_default()
+    let bar_width = picker_footer_bar_width(width, position, total, percent);
+    render::picker_footer_progress_line(position, total, &total_display, percent, bar_width)
+}
+
+fn picker_footer_bar_width(width: u16, position: usize, total: usize, percent: u8) -> usize {
+    let label = format!(" {position}/{total} · {percent}% ");
+    let label_width = UnicodeWidthStr::width(label.as_str());
+    width.saturating_sub(label_width as u16 + 12).clamp(4, 20) as usize
+}
+
+#[cfg(test)]
+fn picker_footer_progress_label(state: &PickerState, list_height: u16, width: u16) -> String {
+    picker_footer_progress_line(state, list_height, width)
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
 }
 
 fn picker_footer_percent(state: &PickerState, list_height: u16) -> u8 {
@@ -2273,13 +2284,17 @@ fn hint_line_for_row(hints: &[PickerFooterHint], width: u16) -> Line<'static> {
     Line::default()
 }
 
-fn render_transcript_loading_overlay(frame: &mut crate::custom_terminal::Frame, area: Rect) {
+fn render_transcript_loading_overlay(
+    frame: &mut crate::custom_terminal::Frame,
+    area: Rect,
+    animations_enabled: bool,
+) {
     if area.width == 0 || area.height == 0 {
         return;
     }
 
-    let message = "Loading transcript…";
-    let message_width = UnicodeWidthStr::width(message) as u16;
+    let message_line = render::transcript_loading_message(animations_enabled);
+    let message_width = message_line.width() as u16;
     let overlay_width = if area.width >= message_width.saturating_add(10) {
         message_width + 10
     } else {
@@ -2299,7 +2314,14 @@ fn render_transcript_loading_overlay(frame: &mut crate::custom_terminal::Frame, 
         }
     }
 
-    let message = truncate_text(message, overlay.width as usize);
+    let message = truncate_text(
+        &message_line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>(),
+        overlay.width as usize,
+    );
     let message_width = UnicodeWidthStr::width(message.as_str()) as u16;
     let line = Rect::new(
         overlay.x + overlay.width.saturating_sub(message_width) / 2,
@@ -2307,7 +2329,7 @@ fn render_transcript_loading_overlay(frame: &mut crate::custom_terminal::Frame, 
         message_width.min(overlay.width),
         1,
     );
-    frame.render_widget_ref(Line::from(message.bold()), line);
+    frame.render_widget_ref(message_line, line);
 }
 
 fn transcript_loading_overlay_style() -> Style {
@@ -2423,8 +2445,14 @@ fn render_list(frame: &mut crate::custom_terminal::Frame, area: Rect, state: &Pi
 
     let rows = &state.filtered_rows;
     if rows.is_empty() {
-        let message = render_empty_state_line(state);
-        frame.render_widget_ref(message, area);
+        let lines = render_empty_state_lines(state);
+        for (idx, line) in lines.into_iter().enumerate() {
+            let y = area.y.saturating_add(idx as u16);
+            if y >= area.bottom() {
+                break;
+            }
+            frame.render_widget_ref(line, Rect::new(area.x, y, area.width, 1));
+        }
         return;
     }
 
@@ -2527,7 +2555,7 @@ fn render_comfortable_session_lines(
     is_zebra: bool,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let marker = selection_marker(is_selected, is_expanded);
+    let marker = render::selection_marker(is_selected, is_expanded);
     let title = truncate_text(row.display_preview(), width.saturating_sub(2) as usize);
     let title = if is_selected {
         selected_session_title_span(title)
@@ -2607,7 +2635,7 @@ fn render_dense_session_lines(
     is_zebra: bool,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let marker = selection_marker(is_selected, is_expanded);
+    let marker = render::selection_marker(is_selected, is_expanded);
     let reference = state.relative_time_reference.unwrap_or_else(Utc::now);
     let created = format_relative_time(reference, row.created_at);
     let updated = format_relative_time(reference, row.updated_at.or(row.created_at));
@@ -2709,14 +2737,6 @@ fn dense_column_text(text: &str, width: usize) -> String {
     let text = truncate_text(text, width.saturating_sub(1));
     let padding = width.saturating_sub(UnicodeWidthStr::width(text.as_str()));
     format!("{text}{}", " ".repeat(padding))
-}
-
-fn selection_marker(is_selected: bool, is_expanded: bool) -> Span<'static> {
-    match (is_selected, is_expanded) {
-        (true, true) => "⌄ ".set_style(selected_session_style().bold()),
-        (true, false) => "❯ ".set_style(selected_session_style().bold()),
-        (false, _) => "  ".into(),
-    }
 }
 
 fn selected_session_style() -> Style {
@@ -3166,31 +3186,31 @@ fn format_timestamp(ts: DateTime<Utc>) -> String {
     ts.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
-fn render_empty_state_line(state: &PickerState) -> Line<'static> {
+fn render_empty_state_lines(state: &PickerState) -> Vec<Line<'static>> {
     if !state.query.is_empty() {
         if state.search_state.is_active()
             || (state.pagination.loading.is_pending() && state.pagination.next_cursor.is_some())
         {
-            return vec!["Searching…".italic().dim()].into();
+            return vec!["Searching…".italic().dim().into()];
         }
         if state.pagination.reached_scan_cap {
             let msg = format!(
                 "Search scanned first {} sessions; more may exist",
                 state.pagination.num_scanned_files
             );
-            return vec![Span::from(msg).italic().dim()].into();
+            return vec![Span::from(msg).italic().dim().into()];
         }
-        return vec!["No results for your search".italic().dim()].into();
+        return vec!["No results for your search".italic().dim().into()];
     }
 
     if state.pagination.loading.is_pending() {
         if state.all_rows.is_empty() && state.pagination.num_scanned_files == 0 {
-            return vec!["Loading sessions…".italic().dim()].into();
+            return vec!["Loading sessions…".italic().dim().into()];
         }
-        return vec!["Loading older sessions…".italic().dim()].into();
+        return vec!["Loading older sessions…".italic().dim().into()];
     }
 
-    vec!["No sessions yet".italic().dim()].into()
+    render::empty_state_card_lines()
 }
 
 #[cfg(test)]
@@ -3970,7 +3990,9 @@ mod tests {
 
         let label = picker_footer_progress_label(&state, /*list_height*/ 6, /*width*/ 80);
 
-        assert_eq!(label, " 3 / 10 · 0% ");
+        assert!(label.contains('█'));
+        assert!(label.contains("3 / 10"));
+        assert!(label.contains("0%"));
         assert!(!label.contains('-'));
     }
 
@@ -3999,7 +4021,9 @@ mod tests {
 
         let label = picker_footer_progress_label(&state, /*list_height*/ 6, /*width*/ 80);
 
-        assert_eq!(label, " 3 / 10 · 0% ");
+        assert!(label.contains('█'));
+        assert!(label.contains("3 / 10"));
+        assert!(label.contains("0%"));
     }
 
     #[test]
@@ -4033,7 +4057,9 @@ mod tests {
 
         let label = picker_footer_progress_label(&state, /*list_height*/ 6, /*width*/ 80);
 
-        assert_eq!(label, " 10 / 10… · 37% ");
+        assert!(label.contains('█'));
+        assert!(label.contains("10 / 10"));
+        assert!(label.contains("37%"));
     }
 
     #[test]
@@ -4248,7 +4274,7 @@ mod tests {
             let mut frame = terminal.get_frame();
             let area = frame.area();
             render_list(&mut frame, area, &state);
-            render_transcript_loading_overlay(&mut frame, area);
+            render_transcript_loading_overlay(&mut frame, area, /*animations_enabled*/ true);
         }
         terminal.flush().expect("flush");
 
@@ -4805,7 +4831,7 @@ session_picker_view = "dense"
     #[test]
     fn dense_selected_summary_line_uses_full_width_selection_style() {
         let line = dense_summary_line(DenseSummaryInput {
-            marker: selection_marker(/*is_selected*/ true, /*is_expanded*/ false),
+            marker: render::selection_marker(/*is_selected*/ true, /*is_expanded*/ false),
             date: "15m ago",
             title: "Selected dense row",
             is_selected: true,
@@ -4815,13 +4841,15 @@ session_picker_view = "dense"
 
         assert_eq!(line.width(), 80);
         assert_eq!(line.style.fg, selected_session_style().fg);
-        assert_eq!(line.spans[0].content, "❯ ");
+        assert_eq!(line.spans[0].content, "▌❯ ");
     }
 
     #[test]
     fn dense_zebra_summary_line_uses_full_width_background() {
         let line = dense_summary_line(DenseSummaryInput {
-            marker: selection_marker(/*is_selected*/ false, /*is_expanded*/ false),
+            marker: render::selection_marker(
+                /*is_selected*/ false, /*is_expanded*/ false,
+            ),
             date: "15m ago",
             title: "Zebra dense row",
             is_selected: false,
@@ -5631,10 +5659,10 @@ session_picker_view = "dense"
         assert_eq!(state.selected, 9);
         assert!(state.pagination.loading.is_pending());
         assert_eq!(recorded_requests.lock().unwrap().len(), 1);
-        assert_eq!(
-            picker_footer_progress_label(&state, /*list_height*/ 5, /*width*/ 80),
-            " 10 / 10… · 100% "
-        );
+        let label = picker_footer_progress_label(&state, /*list_height*/ 5, /*width*/ 80);
+        assert!(label.contains('█'));
+        assert!(label.contains("10 / 10…"));
+        assert!(label.contains("100%"));
     }
 
     #[tokio::test]

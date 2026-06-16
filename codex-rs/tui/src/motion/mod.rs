@@ -3,12 +3,17 @@
 //! Callers choose an explicit reduced-motion fallback here instead of reaching
 //! directly for time-varying spinner or shimmer helpers.
 
+mod scanner;
+
 use std::time::Instant;
 
 use ratatui::style::Stylize;
 use ratatui::text::Span;
 
 use crate::shimmer::shimmer_spans;
+
+pub(crate) use scanner::ScannerStyle;
+pub(crate) use scanner::scanner_spans;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MotionMode {
@@ -179,6 +184,9 @@ mod tests {
     }
 
     fn animation_primitive_allowlisted_path(relative_path: &str) -> bool {
-        matches!(relative_path, "motion.rs" | "shimmer.rs")
+        matches!(
+            relative_path,
+            "motion/mod.rs" | "motion/scanner.rs" | "shimmer.rs"
+        )
     }
 }
