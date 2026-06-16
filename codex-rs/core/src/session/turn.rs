@@ -203,6 +203,9 @@ pub(crate) async fn run_turn(
     // 2. After auto-compact, when model/tool continuation needs to resume before any steer.
     let mut unfinished_plan_nudge_count = 0usize;
     let mut progress_continuation_nudge_count = 0usize;
+    let mut length_auto_continue_count = 0usize;
+    let mut empty_output_nudge_count = 0usize;
+    let mut recent_tool_calls: Vec<(String, String)> = Vec::new();
 
     loop {
         // Note that pending_input would be something like a message the user
@@ -250,6 +253,7 @@ pub(crate) async fn run_turn(
                 let SamplingRequestResult {
                     needs_follow_up: model_needs_follow_up,
                     last_agent_message: sampling_request_last_agent_message,
+                    tool_call_count: tool_call_count_in_sampling,
                 } = sampling_request_output;
                 can_drain_pending_input = true;
                 let (mut has_pending_input, token_status, estimated_token_count) = async {
@@ -307,6 +311,70 @@ pub(crate) async fn run_turn(
                     )
                     .await;
                     has_pending_input = true;
+                }
+                // Auto-continue on length: model signaled continuation (end_turn=false)
+                // but made no tool calls — likely hit max_output_tokens. Inject a
+                // continuation nudge so the model resumes from where it stopped.
+                if model_needs_follow_up
+                    && !has_pending_input
+                    && tool_call_count_in_sampling == 0
+                    && length_auto_continue_count < AUTO_CONTINUE_LENGTH_LIMIT
+                {
+                    length_auto_continue_count += 1;
+                    let continuation = length_auto_continue_item();
+                    sess.record_conversation_items(
+                        turn_context.as_ref(),
+                        std::slice::from_ref(&continuation),
+                    )
+                    .await;
+                    has_pending_input = true;
+                }
+                // Empty output detection: model produced no text and no tools.
+                if !model_needs_follow_up
+                    && !has_pending_input
+                    && empty_output_nudge_count < EMPTY_OUTPUT_NUDGE_LIMIT
+                    && sampling_request_last_agent_message
+                        .as_deref()
+                        .is_none_or(str::is_empty)
+                    && tool_call_count_in_sampling == 0
+                {
+                    empty_output_nudge_count += 1;
+                    let nudge = empty_output_nudge_item();
+                    sess.record_conversation_items(
+                        turn_context.as_ref(),
+                        std::slice::from_ref(&nudge),
+                    )
+                    .await;
+                    has_pending_input = true;
+                }
+                // Doom loop detection: identical tool calls repeated consecutively.
+                if tool_call_count_in_sampling > 0 {
+                    let current_call_summary = sampling_request_last_agent_message
+                        .clone()
+                        .unwrap_or_default();
+                    recent_tool_calls.push((
+                        current_call_summary,
+                        format!("{tool_call_count_in_sampling}"),
+                    ));
+                    if recent_tool_calls.len() > DOOM_LOOP_THRESHOLD {
+                        recent_tool_calls.remove(0);
+                    }
+                    if recent_tool_calls.len() == DOOM_LOOP_THRESHOLD
+                        && recent_tool_calls.windows(2).all(|w| w[0].1 == w[1].1)
+                    {
+                        sess.send_event(
+                            &turn_context,
+                            EventMsg::Warning(WarningEvent {
+                                message: format!(
+                                    "Model has made the same tool calls {DOOM_LOOP_THRESHOLD} times in a row. Consider stopping or changing approach."
+                                ),
+                            }),
+                        )
+                        .await;
+                        recent_tool_calls.clear();
+                    }
+                } else {
+                    recent_tool_calls.clear();
                 }
                 let needs_follow_up = model_needs_follow_up || has_pending_input;
                 let token_limit_reached = token_status.token_limit_reached;
@@ -897,6 +965,36 @@ fn assistant_message_promises_continuation(message: &str) -> bool {
     .any(|verb| message.contains(verb))
 }
 
+const AUTO_CONTINUE_LENGTH_LIMIT: usize = 3;
+const EMPTY_OUTPUT_NUDGE_LIMIT: usize = 2;
+const DOOM_LOOP_THRESHOLD: usize = 3;
+
+fn length_auto_continue_item() -> ResponseItem {
+    ResponseItem::Message {
+        id: Some(uuid::Uuid::new_v4().to_string()),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "Continue the task from the exact point where it stopped. Do not repeat work already done."
+                .to_string(),
+        }],
+        phase: None,
+        metadata: None,
+    }
+}
+
+fn empty_output_nudge_item() -> ResponseItem {
+    ResponseItem::Message {
+        id: Some(uuid::Uuid::new_v4().to_string()),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "Your previous response was empty. Provide a final answer or call a valid tool to continue."
+                .to_string(),
+        }],
+        phase: None,
+        metadata: None,
+    }
+}
+
 #[derive(Debug)]
 struct AutoCompactTokenStatus {
     // Full active context usage, independent of the configured auto-compact scope.
@@ -1416,6 +1514,7 @@ pub(crate) async fn built_tools(
 struct SamplingRequestResult {
     needs_follow_up: bool,
     last_agent_message: Option<String>,
+    tool_call_count: usize,
 }
 
 /// Ephemeral per-response state for streaming a single proposed plan.
@@ -2029,6 +2128,7 @@ async fn try_run_sampling_request(
         FuturesOrdered::new();
     let mut needs_follow_up = false;
     let mut last_agent_message: Option<String> = None;
+    let mut tool_call_count_in_pass: usize = 0;
     let mut active_item: Option<TurnItem> = None;
     let mut active_tool_argument_diff_consumer: Option<(
         String,
@@ -2167,6 +2267,7 @@ async fn try_run_sampling_request(
                     };
                 if let Some(tool_future) = output_result.tool_future {
                     in_flight.push_back(tool_future);
+                    tool_call_count_in_pass += 1;
                 }
                 if let Some(agent_message) = output_result.last_agent_message {
                     last_agent_message = Some(agent_message);
@@ -2177,6 +2278,7 @@ async fn try_run_sampling_request(
                     break Ok(SamplingRequestResult {
                         needs_follow_up: true,
                         last_agent_message,
+                        tool_call_count: tool_call_count_in_pass,
                     });
                 }
             }
@@ -2313,6 +2415,7 @@ async fn try_run_sampling_request(
                 break Ok(SamplingRequestResult {
                     needs_follow_up,
                     last_agent_message,
+                    tool_call_count: tool_call_count_in_pass,
                 });
             }
             ResponseEvent::OutputTextDelta(delta) => {

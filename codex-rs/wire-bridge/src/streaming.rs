@@ -567,10 +567,24 @@ impl ChatToResponsesState {
         events.extend(self.finalize_text());
         events.extend(self.finalize_tools());
 
-        let status = response_status_from_finish_reason(self.finish_reason.as_deref());
+        let has_tool_calls = self.tools.values().any(|state| state.added);
+
+        // Some Chat Completions providers return finish_reason "stop" even when the
+        // model made tool calls. Upgrade to "tool_calls" so downstream consumers
+        // correctly treat the response as requiring tool execution, not final.
+        let effective_finish = match (self.finish_reason.as_deref(), has_tool_calls) {
+            (Some("stop"), true) => Some("tool_calls"),
+            (other, _) => other,
+        };
+
+        let status = response_status_from_finish_reason(effective_finish);
         let mut response = self.base_response(status, self.completed_output_items());
         if status == "incomplete" {
             response["incomplete_details"] = json!({ "reason": "max_output_tokens" });
+        }
+
+        if has_tool_calls || status == "incomplete" {
+            response["end_turn"] = json!(false);
         }
 
         events.push(sse_event(
@@ -1320,5 +1334,57 @@ mod tests {
         assert!(output.contains("quota exceeded"));
         assert!(output.contains("rate_limit_exceeded"));
         assert!(!output.contains("event: response.completed"));
+    }
+
+    #[tokio::test]
+    async fn tool_call_response_sets_end_turn_false() {
+        let output = collect(vec![
+            "data: {\"id\":\"chatcmpl_tc\",\"model\":\"gpt-5.4\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\"}}]}}]}\n\n",
+            "data: {\"id\":\"chatcmpl_tc\",\"model\":\"gpt-5.4\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\":\\\"Tokyo\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            "data: [DONE]\n\n",
+        ])
+        .await;
+
+        assert!(output.contains("event: response.completed"));
+        assert!(output.contains("\"end_turn\":false"));
+    }
+
+    #[tokio::test]
+    async fn text_only_response_does_not_set_end_turn() {
+        let output = collect(vec![
+            "data: {\"id\":\"chatcmpl_txt\",\"model\":\"gpt-5.4\",\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        ])
+        .await;
+
+        assert!(output.contains("event: response.completed"));
+        assert!(!output.contains("end_turn"));
+    }
+
+    #[tokio::test]
+    async fn tool_call_with_stop_finish_reason_upgrades_to_end_turn_false() {
+        let output = collect(vec![
+            "data: {\"id\":\"chatcmpl_stop_tc\",\"model\":\"gpt-5.4\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"exec\"}}]}}]}\n\n",
+            "data: {\"id\":\"chatcmpl_stop_tc\",\"model\":\"gpt-5.4\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"cmd\\\":\\\"ls\\\"}\"}}]},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        ])
+        .await;
+
+        assert!(output.contains("event: response.completed"));
+        assert!(output.contains("\"end_turn\":false"));
+    }
+
+    #[tokio::test]
+    async fn incomplete_length_response_sets_end_turn_false() {
+        let output = collect(vec![
+            "data: {\"id\":\"chatcmpl_len\",\"model\":\"gpt-5.4\",\"choices\":[{\"delta\":{\"content\":\"partial output\"},\"finish_reason\":\"length\"}]}\n\n",
+            "data: [DONE]\n\n",
+        ])
+        .await;
+
+        assert!(output.contains("event: response.completed"));
+        assert!(output.contains("\"status\":\"incomplete\""));
+        assert!(output.contains("\"end_turn\":false"));
+        assert!(output.contains("\"reason\":\"max_output_tokens\""));
     }
 }

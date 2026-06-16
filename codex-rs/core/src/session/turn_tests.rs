@@ -156,3 +156,41 @@ fn progress_continuation_ignores_final_or_optional_followup() {
         "If you want, I can stage these files next."
     ));
 }
+
+#[test]
+fn length_auto_continue_item_has_user_role_and_content() {
+    let item = length_auto_continue_item();
+    match &item {
+        ResponseItem::Message { role, content, .. } => {
+            assert_eq!(role, "user");
+            assert!(!content.is_empty());
+            match &content[0] {
+                ContentItem::InputText { text } => {
+                    assert!(text.contains("Continue"));
+                    assert!(text.contains("stopped"));
+                }
+                other => panic!("expected InputText, got {other:?}"),
+            }
+        }
+        other => panic!("expected Message, got {other:?}"),
+    }
+}
+
+#[test]
+fn empty_output_nudge_item_has_user_role_and_content() {
+    let item = empty_output_nudge_item();
+    match &item {
+        ResponseItem::Message { role, content, .. } => {
+            assert_eq!(role, "user");
+            assert!(!content.is_empty());
+            match &content[0] {
+                ContentItem::InputText { text } => {
+                    assert!(text.contains("empty"));
+                    assert!(text.contains("tool"));
+                }
+                other => panic!("expected InputText, got {other:?}"),
+            }
+        }
+        other => panic!("expected Message, got {other:?}"),
+    }
+}

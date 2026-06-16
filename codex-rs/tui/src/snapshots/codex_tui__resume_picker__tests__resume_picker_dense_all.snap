@@ -1,6 +1,5 @@
 ---
 source: tui/src/resume_picker.rs
-assertion_line: 4736
 expression: "render_dense_row_snapshot(true, None, 120,)"
 ---
 ❯ 15m ago     Propose session picker redesign with enough title text to exercise truncation
