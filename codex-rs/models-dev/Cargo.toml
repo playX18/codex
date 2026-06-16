@@ -1,0 +1,28 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "codex-models-dev"
+version.workspace = true
+
+[lib]
+doctest = false
+name = "codex_models_dev"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+fs2 = "0.4.3"
+reqwest = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time"] }
+tracing = { workspace = true, features = ["log"] }
+
+[dev-dependencies]
+filetime = "0.2"
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
