@@ -119,6 +119,7 @@ mod thread_processor_behavior_tests {
     use codex_config::StaticThreadConfigLoader;
     use codex_config::ThreadConfigSource;
     use codex_model_provider_info::ModelProviderInfo;
+    use codex_model_provider_info::UpstreamWireApi;
     use codex_model_provider_info::WireApi;
     use codex_protocol::ThreadId;
     use codex_protocol::config_types::CollaborationMode;
@@ -675,6 +676,8 @@ mod thread_processor_behavior_tests {
             auth: None,
             aws: None,
             wire_api: WireApi::Responses,
+            upstream_wire_api: UpstreamWireApi::Responses,
+            codex_chat_reasoning: None,
             query_params: None,
             http_headers: None,
             env_http_headers: None,

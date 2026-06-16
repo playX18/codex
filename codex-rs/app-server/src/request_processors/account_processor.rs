@@ -837,6 +837,7 @@ impl AccountRequestProcessor {
         let provider = create_model_provider(
             self.config.model_provider.clone(),
             Some(self.auth_manager.clone()),
+            None,
         );
         let account_state = match provider.account_state() {
             Ok(account_state) => account_state,

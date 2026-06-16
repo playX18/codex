@@ -26,6 +26,7 @@ use codex_protocol::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
+use serde_json::json;
 use std::collections::BTreeMap;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -90,6 +91,57 @@ async fn thread_settings_update_emits_notification_and_updates_future_turns() ->
                     == Some(service_tier_id.as_str())
         }),
         "future turn did not use updated model/service tier: {request_bodies:#?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_settings_update_uses_supplied_model_provider_info() -> Result<()> {
+    let server = create_mock_responses_server_sequence_unchecked(vec![
+        create_final_assistant_message_sse_response("done")?,
+    ])
+    .await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), "https://unused.invalid")?;
+    write_models_cache(codex_home.path())?;
+
+    let mut mcp = TestAppServer::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+    let thread = start_thread(&mut mcp).await?.thread;
+
+    send_thread_settings_update(
+        &mut mcp,
+        ThreadSettingsUpdateParams {
+            thread_id: thread.id.clone(),
+            model_provider: Some("external-provider".to_string()),
+            model_provider_info: Some(json!({
+                "name": "External Provider",
+                "base_url": format!("{}/v1", server.uri()),
+                "env_key": "PATH",
+                "wire_api": "responses",
+            })),
+            model: Some("external-model".to_string()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    let updated = read_thread_settings_updated(&mut mcp).await?;
+    assert_eq!(updated.thread_settings.model_provider, "external-provider");
+    assert_eq!(updated.thread_settings.model, "external-model");
+
+    start_text_turn(&mut mcp, thread.id.clone()).await?;
+    timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_notification_message("turn/completed"),
+    )
+    .await??;
+
+    let request_bodies = received_response_bodies(&server).await?;
+    assert!(
+        request_bodies
+            .iter()
+            .any(|body| { body.get("model").and_then(Value::as_str) == Some("external-model") }),
+        "future turn did not use supplied provider info: {request_bodies:#?}"
     );
     Ok(())
 }

@@ -5,6 +5,7 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_utils_path_uri::PathUri;
+use serde_json::Value as JsonValue;
 
 const DIRECT_INPUT_TO_MULTI_AGENT_V2_SUBAGENT_ERROR: &str =
     "direct app-server input is not allowed for multi-agent v2 sub-agents";
@@ -57,6 +58,8 @@ struct ThreadSettingsBuildParams {
     sandbox_policy: Option<codex_app_server_protocol::SandboxPolicy>,
     permissions: Option<String>,
     model: Option<String>,
+    model_provider: Option<String>,
+    model_provider_info: Option<JsonValue>,
     service_tier: Option<Option<String>>,
     effort: Option<ReasoningEffort>,
     summary: Option<ReasoningSummary>,
@@ -460,6 +463,8 @@ impl TurnRequestProcessor {
                     sandbox_policy: params.sandbox_policy,
                     permissions: params.permissions,
                     model: params.model,
+                    model_provider: None,
+                    model_provider_info: None,
                     service_tier: params.service_tier,
                     effort: params.effort,
                     summary: params.summary,
@@ -566,6 +571,8 @@ impl TurnRequestProcessor {
             sandbox_policy,
             permissions,
             model,
+            model_provider,
+            model_provider_info,
             service_tier,
             effort,
             summary,
@@ -599,6 +606,8 @@ impl TurnRequestProcessor {
             || sandbox_policy.is_some()
             || permissions.is_some()
             || model.is_some()
+            || model_provider.is_some()
+            || model_provider_info.is_some()
             || service_tier.is_some()
             || effort.is_some()
             || summary.is_some()
@@ -661,6 +670,37 @@ impl TurnRequestProcessor {
                 (None, None, None)
             };
         let effort = effort.map(Some);
+        let model_provider_info = match (model_provider.as_ref(), model_provider_info) {
+            (Some(model_provider), Some(model_provider_info)) => Some(
+                serde_json::from_value::<codex_model_provider_info::ModelProviderInfo>(
+                    model_provider_info,
+                )
+                .map_err(|err| {
+                    invalid_request(format!(
+                        "invalid thread settings override: invalid model provider info for `{model_provider}`: {err}"
+                    ))
+                })?,
+            ),
+            (Some(model_provider), None) => {
+                let config = self
+                    .config_manager
+                    .load_latest_config(/*fallback_cwd*/ None)
+                    .await
+                    .map_err(|err| config_load_error(&err))?;
+                let provider = config.model_providers.get(model_provider).ok_or_else(|| {
+                    invalid_request(format!(
+                        "invalid thread settings override: unknown model provider `{model_provider}`"
+                    ))
+                })?;
+                Some(provider.clone())
+            }
+            (None, Some(_)) => {
+                return Err(invalid_request(
+                    "invalid thread settings override: modelProviderInfo requires modelProvider",
+                ));
+            }
+            (None, None) => None,
+        };
 
         if has_any_overrides {
             thread
@@ -675,6 +715,8 @@ impl TurnRequestProcessor {
                     profile_workspace_roots: profile_workspace_roots.clone(),
                     windows_sandbox_level: None,
                     model: model.clone(),
+                    model_provider: model_provider.clone(),
+                    model_provider_info: model_provider_info.clone(),
                     effort: effort.clone(),
                     summary,
                     service_tier: service_tier.clone(),
@@ -698,6 +740,9 @@ impl TurnRequestProcessor {
             active_permission_profile,
             windows_sandbox_level: None,
             model,
+            model_provider: model_provider.clone(),
+            model_provider_info: model_provider_info
+                .and_then(|provider| serde_json::to_value(provider).ok()),
             effort,
             summary,
             service_tier,
@@ -728,6 +773,8 @@ impl TurnRequestProcessor {
                     sandbox_policy: params.sandbox_policy,
                     permissions: params.permissions,
                     model: params.model,
+                    model_provider: params.model_provider,
+                    model_provider_info: params.model_provider_info,
                     service_tier: params.service_tier,
                     effort: params.effort,
                     summary: params.summary,

@@ -158,7 +158,8 @@ impl ConfigRequestProcessor {
         &self,
     ) -> Result<ModelProviderCapabilitiesReadResponse, JSONRPCErrorError> {
         let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
-        let provider = create_model_provider(config.model_provider, /*auth_manager*/ None);
+        let provider =
+            create_model_provider(config.model_provider, /*auth_manager*/ None, None);
         let capabilities = provider.capabilities();
         Ok(ModelProviderCapabilitiesReadResponse {
             namespace_tools: capabilities.namespace_tools,

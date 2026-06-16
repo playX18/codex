@@ -236,6 +236,66 @@ async fn batch_write_rejects_legacy_profile_selector() -> Result<()> {
 }
 
 #[tokio::test]
+async fn batch_write_accepts_hyphenated_model_provider_id() -> Result<()> {
+    let tmp = tempdir().expect("tempdir");
+    let path = tmp.path().join(CONFIG_TOML_FILE);
+    std::fs::write(&path, "")?;
+
+    let catalog_path = tmp
+        .path()
+        .join("provider-catalog")
+        .join("xiaomi-token-plan-sgp.json");
+    let service = ConfigManager::without_managed_config_for_tests(tmp.path().to_path_buf());
+    service
+        .batch_write(ConfigBatchWriteParams {
+            edits: vec![
+                codex_app_server_protocol::ConfigEdit {
+                    key_path: "model_provider".to_string(),
+                    value: serde_json::json!("xiaomi-token-plan-sgp"),
+                    merge_strategy: MergeStrategy::Replace,
+                },
+                codex_app_server_protocol::ConfigEdit {
+                    key_path: "model_catalog_json".to_string(),
+                    value: serde_json::json!(catalog_path),
+                    merge_strategy: MergeStrategy::Replace,
+                },
+                codex_app_server_protocol::ConfigEdit {
+                    key_path: "model_providers.\"xiaomi-token-plan-sgp\"".to_string(),
+                    value: serde_json::json!({
+                        "name": "Xiaomi Token Plan (Singapore)",
+                        "base_url": "https://token-plan-sgp.xiaomimimo.com/v1",
+                        "env_key": "XIAOMI_API_KEY",
+                        "wire_api": "responses",
+                        "upstream_wire_api": "chat_completions",
+                        "codex_chat_reasoning": {
+                            "supports_thinking": true,
+                            "supports_effort": true,
+                            "thinking_param": "thinking",
+                            "effort_param": "reasoning_effort",
+                            "effort_value_mode": "openai"
+                        }
+                    }),
+                    merge_strategy: MergeStrategy::Replace,
+                },
+            ],
+            file_path: Some(path.display().to_string()),
+            expected_version: None,
+            reload_user_config: false,
+        })
+        .await
+        .expect("hyphenated provider id should be writable");
+
+    let contents = std::fs::read_to_string(path)?;
+    let config: toml::Value = toml::from_str(&contents)?;
+    assert_eq!(
+        config["model_providers"]["xiaomi-token-plan-sgp"]["name"].as_str(),
+        Some("Xiaomi Token Plan (Singapore)")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn write_value_supports_nested_app_paths() -> Result<()> {
     let tmp = tempdir().expect("tempdir");
     std::fs::write(tmp.path().join(CONFIG_TOML_FILE), "")?;
